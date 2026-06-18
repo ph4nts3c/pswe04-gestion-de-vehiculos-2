@@ -1,0 +1,30 @@
+flowchart TD
+    dueño["Dueño del negocio"]
+    vendedor["Vendedor"]
+    comprador["Comprador"]
+    redes["Encargado de redes sociales"]
+
+    sistema["Gestión de venta de vehículos<br/>Plataforma para administrar inventario, leads,<br/>publicaciones, citas, fotos, documentos y seguimiento comercial"]
+
+    whatsapp["WhatsApp Business<br/>Canal de contacto con compradores"]
+    drive["Google Drive<br/>Fotos y documentos de vehículos"]
+    calendar["Google Calendar<br/>Agenda de citas"]
+    crautos["CR Autos<br/>Publicación de vehículos"]
+    marketplace["Facebook Marketplace<br/>Publicación y captación de interesados"]
+    encuentra["Encuentra24<br/>Publicación de vehículos"]
+    web["Sitio web<br/>Inventario público del negocio"]
+    notificaciones["Correo / Notificaciones<br/>Alertas y recordatorios internos"]
+
+    dueño -->|"Consulta inventario, ventas, reportes y comisiones"| sistema
+    vendedor -->|"Registra leads, consulta vehículos y agenda citas"| sistema
+    comprador -->|"Solicita información y agenda visitas"| sistema
+    redes -->|"Consulta vehículos listos para publicar"| sistema
+
+    sistema -->|"Registra contactos y seguimiento de interesados"| whatsapp
+    sistema -->|"Asocia fotos y documentos a vehículos"| drive
+    sistema -->|"Crea y consulta citas"| calendar
+    sistema -->|"Controla estado de publicación"| crautos
+    sistema -->|"Controla estado de publicación"| marketplace
+    sistema -->|"Controla estado de publicación"| encuentra
+    sistema -->|"Muestra o sincroniza inventario disponible"| web
+    sistema -->|"Envía alertas y recordatorios"| notificaciones
