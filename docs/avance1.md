@@ -140,3 +140,106 @@ Rutas alternas permitidas:
 | Pasa a reservado | Marca publicaciones como pendientes de cambio de disponibilidad y alerta a ventas. |
 | Pasa a vendido | Genera tarea de retiro o cierre por canal y bloquea nuevas citas. |
 | Pasa a retirado | Genera tarea para pausar o eliminar publicaciones y guarda motivo. 
+
+## 3. Stakeholders y drivers arquitectónicos
+
+Las decisiones de arquitectura se justifican por los intereses de los actores, las restricciones de los canales externos y los atributos de calidad que el sistema necesita cuidar desde el inicio.
+
+### 3.1 Stakeholders principales
+
+| Stakeholder | Interés principal | Necesidad o expectativa |
+|---|---|---|
+| Dueño del negocio | Control general de la operación. | Ver inventario, clientes potenciales, ventas, citas, comisiones y problemas de publicación desde un solo lugar. |
+| Vendedor | Atender compradores sin perder tiempo. | Consultar datos del vehículo, fotos, precio, estado y disponibilidad sin revisar varias fuentes. |
+| Cliente vendedor o consignante | Dar seguimiento al vehículo que dejó en consignación. | Saber si el vehículo fue publicado, si tiene interesados y si hubo cambios de precio o estado. |
+| Cliente comprador | Recibir información confiable. | Ver precio, fotos, disponibilidad y poder coordinar una visita sin recibir datos contradictorios. |
+| Encargado de publicaciones | Mantener canales externos al día. | Saber cuáles vehículos están listos para publicar y cuáles publicaciones quedaron pendientes o fallidas. |
+| Encargado de fotos y documentos | Completar la ficha del vehículo. | Identificar qué archivos faltan y dejar evidencia de carga o revisión. |
+| Responsable financiero o de comisiones | Calcular los montos de cierre. | Revisar precio final, comisión, venta y responsable del cierre. |
+| Administrador técnico del sistema | Mantener operación y permisos. | Administrar usuarios, roles, integraciones, errores y disponibilidad del sistema. |
+
+### 3.2 Plataformas externas como restricciones técnicas
+
+| Canal o sistema externo | Tipo de relación | Implicación arquitectónica |
+|---|---|---|
+| WhatsApp Business | Canal de entrada y seguimiento comercial. | El sistema debe asociar contactos y conversaciones a clientes potenciales sin asumir que todo se automatiza. |
+| Google Drive | Almacenamiento externo de archivos. | La ficha del vehículo guarda enlaces, estado y metadatos; no depende de carpetas sueltas. |
+| Google Calendar | Apoyo para agenda. | Las citas comerciales se registran internamente y se sincronizan cuando sea posible. |
+| CRAutos | Publicación externa. | Puede manejarse como registro de estado o integración si el canal lo permite. |
+| Facebook Marketplace | Publicación externa y captación. | Requiere control manual o semiautomático porque no debe asumirse publicación garantizada. |
+| Encuentra24 | Publicación externa. | El sistema registra enlace, fecha, responsable y estado de actualización. |
+| Correo / notificaciones | Avisos internos. | Se usa para alertar cambios de estado, fallas de integración o tareas pendientes. |
+| Sitio web propio | Canal propio de consulta. | Forma parte de la solución cuando consume inventario desde la fuente de verdad interna. |
+
+### 3.3 Drivers arquitectónicos
+
+| Driver | Preocupación real | Decisión estructural que provoca |
+|---|---|---|
+| Repositorio centralizado interno | Precio, estado, disponibilidad y datos del vehículo no pueden depender de hojas, chats o publicaciones externas. | Usar un módulo central de inventario con reglas de estado, validaciones y auditoría. |
+| Consistencia con publicaciones externas | Un cambio interno puede tardar en llegar a CRAutos, Marketplace o Encuentra24. | Separar inventario de publicaciones y manejar estados por canal: actualizado, pendiente, fallido o manual. |
+| Ciclo de vida del vehículo | El negocio necesita saber qué acciones son válidas en cada etapa. | Modelar estados y transiciones como regla de dominio, no como texto libre. |
+| Trazabilidad comercial | Se necesita saber quién cambió precio, estado, documentos, cita o publicación. | Guardar eventos de auditoría con usuario, fecha, valor anterior, valor nuevo y canal afectado. |
+| Integraciones con distinto nivel de madurez | No todos los canales permiten la misma automatización. | Usar adaptadores por canal y evitar que módulos internos llamen directamente a servicios externos. |
+| Respuesta rápida a vendedores | Durante una conversación, el vendedor necesita datos en segundos. | Priorizar consultas de ficha de vehículo y búsquedas comunes con datos preparados para lectura. |
+| Seguridad y privacidad | Hay teléfonos, documentos, fotos y datos comerciales sensibles. | Aplicar roles, permisos por acción y registro de acceso a documentos. |
+| Crecimiento de canales | El negocio puede agregar otro marketplace o canal propio. | Mantener bajo acoplamiento entre inventario, clientes potenciales, publicaciones, agenda e integraciones. |
+
+## 4. Escenarios de calidad
+
+Los escenarios siguientes se enfocan en condiciones que afectan la arquitectura. Cada uno usa una medida verificable para evitar que el atributo quede como una intención general.
+
+### Escenario 1 - Consulta rápida de inventario
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Rendimiento |
+| Fuente | Vendedor |
+| Estímulo | El vendedor necesita consultar un vehículo mientras atiende a un comprador. |
+| Entorno | Horario comercial, desde navegador o dispositivo móvil. |
+| Artefacto afectado | Módulo de inventario y API de consulta. |
+| Respuesta | El sistema muestra ficha del vehículo con datos principales, fotos, precio, estado, disponibilidad y estado de publicaciones. |
+| Medida | El 95% de las consultas de ficha debe responder en menos de 3 segundos bajo carga normal de horario comercial. |
+
+Justificación: si la consulta tarda demasiado, el vendedor vuelve a buscar datos en WhatsApp, hojas de cálculo o carpetas, y el sistema pierde su valor operativo.
+
+### Escenario 2 - Cambio de precio y consistencia de publicaciones
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Integridad de datos y consistencia operacional |
+| Fuente | Dueño del negocio o vendedor autorizado |
+| Estímulo | Se actualiza el precio de un vehículo ya publicado. |
+| Entorno | El vehículo tiene publicaciones en uno o varios canales externos. |
+| Artefacto afectado | Inventario, historial de cambios, módulo de publicaciones e integraciones. |
+| Respuesta | El sistema actualiza el precio interno, registra el cambio y marca cada publicación como actualizada, pendiente de actualización, fallida o manual. |
+| Medida | El precio interno queda actualizado en menos de 2 segundos. El 100% de los cambios guarda usuario, fecha, valor anterior y valor nuevo. Las tareas o estados de publicación se crean en menos de 1 minuto. En canales con integración disponible, se intenta sincronizar antes de 20 minutos. |
+
+Justificación: el alcance no promete publicación automática en todos los canales. Por eso se separa el cambio interno de la actualización externa y se deja visible cualquier diferencia.
+
+### Escenario 3 - Estado reservado, vendido o retirado
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Consistencia de estado |
+| Fuente | Vendedor o dueño del negocio |
+| Estímulo | Un vehículo cambia a reservado, vendido o retirado. |
+| Entorno | Existen clientes potenciales abiertos, citas futuras o publicaciones activas. |
+| Artefacto afectado | Ciclo de vida del vehículo, agenda, clientes potenciales y publicaciones. |
+| Respuesta | El sistema bloquea nuevas reservas o citas según el estado, alerta a vendedores y crea tareas para actualizar o cerrar publicaciones. |
+| Medida | El bloqueo interno se aplica en menos de 2 segundos. Las alertas y tareas de publicación se generan en menos de 1 minuto. Ningún usuario sin permiso puede revertir el estado sin registrar motivo. |
+
+Justificación: cuando el estado real del vehículo no se refleja en la operación, se ofrecen vehículos no disponibles y se da información incorrecta al comprador.
+
+### Escenario 4 - Falla de integración externa
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Interoperabilidad y resiliencia |
+| Fuente | Google Drive, Google Calendar, WhatsApp Business o canal de publicación externo |
+| Estímulo | Una integración no responde, devuelve error o no confirma la operación. |
+| Entorno | Operación normal con servicios externos parcialmente disponibles. |
+| Artefacto afectado | Módulo de integraciones, cola de eventos y registro de errores. |
+| Respuesta | El sistema mantiene el cambio interno, guarda el intento de integración, programa reintento cuando aplique y muestra el pendiente al responsable. |
+| Medida | Cada intento registra canal, operación, entidad afectada, fecha, estado, mensaje de error y número de reintentos. Los errores visibles se actualizan en menos de 1 minuto. |
+
+Justificación: la falla de un servicio externo no debe borrar ni esconder el cambio comercial. El negocio necesita saber qué quedó pendiente y quién debe atenderlo.
