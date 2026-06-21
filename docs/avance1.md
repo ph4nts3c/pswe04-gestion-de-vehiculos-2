@@ -243,3 +243,95 @@ Justificación: cuando el estado real del vehículo no se refleja en la operaci�
 | Medida | Cada intento registra canal, operación, entidad afectada, fecha, estado, mensaje de error y número de reintentos. Los errores visibles se actualizan en menos de 1 minuto. |
 
 Justificación: la falla de un servicio externo no debe borrar ni esconder el cambio comercial. El negocio necesita saber qué quedó pendiente y quién debe atenderlo.
+
+### Escenario 5 - Registro de cliente potencial en atención comercial
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Usabilidad |
+| Fuente | Vendedor |
+| Estímulo | Entra un comprador interesado por WhatsApp, redes sociales, sitio web o plataforma externa. |
+| Entorno | El vendedor atiende varias conversaciones al mismo tiempo. |
+| Artefacto afectado | Módulo de clientes potenciales y ficha del vehículo. |
+| Respuesta | El sistema permite registrar nombre o usuario, teléfono, vehículo de interés, canal de origen y siguiente acción. |
+| Medida | Un cliente potencial básico debe registrarse en menos de 1 minuto y con no más de cinco campos obligatorios. |
+
+Justificación: si registrar el cliente potencial toma demasiado, el vendedor seguirá usando notas sueltas y el historial comercial quedará incompleto.
+
+### Escenario 6 - Acceso a documentos del vehículo
+
+| Elemento | Descripción |
+|---|---|
+| Atributo de calidad | Seguridad y privacidad |
+| Fuente | Vendedor, encargado de documentos o administrador |
+| Estímulo | Un usuario intenta consultar o descargar documentos asociados a un vehículo. |
+| Entorno | Hay datos personales, documentos del vehículo y archivos del consignante. |
+| Artefacto afectado | Módulo de documentos, permisos y auditoría. |
+| Respuesta | El sistema valida el rol, muestra solo documentos autorizados y registra el acceso cuando se trate de archivos sensibles. |
+| Medida | El 100% de accesos a documentos sensibles debe validar el rol. Los accesos autorizados a documentos sensibles quedan registrados con usuario, fecha, vehículo y acción. |
+
+Justificación: los documentos no deben circular como enlaces sin control. El sistema necesita saber quién puede verlos y cuándo se usaron.
+
+## 5. Vista de contexto C4
+
+### 5.1 Descripción de la vista
+
+La vista de contexto C4 muestra a Gestión de venta de vehículos como el sistema central que ordena la operación de venta por consignación. La vista separa tres grupos: personas que usan o dependen del sistema, el sistema central como repositorio centralizado, y los canales o servicios externos que se integran o se registran como parte de la operación.
+
+La delimitación del sistema queda definida así: el inventario, los estados, los precios, los clientes potenciales, las citas comerciales, el historial de cambios, las comisiones y el estado de publicaciones viven dentro de Gestión de venta de vehículos. Los canales externos no son la fuente oficial de esos datos.
+
+<img src="../diagramas/c4-contexto.png">
+
+*Figura 1. Vista de contexto C4 del sistema Gestión de venta de vehículos.*
+
+### 5.2 Actores principales
+
+| Actor | Relación con el sistema |
+|---|---|
+| Dueño del negocio | Consulta operación, aprueba cambios sensibles, revisa reportes y da seguimiento a ventas y comisiones. |
+| Vendedor | Registra clientes potenciales, consulta vehículos, actualiza datos autorizados, agenda citas y da seguimiento a compradores. |
+| Cliente vendedor o consignante | Entrega el vehículo y requiere seguimiento sobre publicación, interesados, cambios de precio y resultado de venta. |
+| Cliente comprador | Solicita información, consulta disponibilidad por canales habilitados y agenda visitas. |
+| Encargado de publicaciones | Pública vehículos en canales externos y actualiza publicaciones cuando cambian precio, estado o disponibilidad. |
+| Encargado de fotos y documentos | Carga fotos, documentos y confirma que el vehículo está listo para publicación. |
+| Responsable financiero o de comisiones | Registra o revisa comisión, precio final y cierre comercial. |
+| Administrador técnico | Configura usuarios, roles, canales de integración y seguimiento de errores. |
+
+### 5.3 Sistemas externos y nivel de integración
+
+| Sistema externo | Relación con el sistema | Nivel de integración esperado |
+|---|---|---|
+| WhatsApp Business | Canal de comunicación con compradores y consignantes. | Registro de clientes potenciales y seguimiento; automatización parcial según capacidades disponibles. |
+| Google Drive | Almacenamiento de fotos y documentos. | Integración para carpetas, enlaces y metadatos; la ficha interna conserva el control. |
+| Google Calendar | Apoyo para citas. | Integración para crear o consultar eventos cuando sea posible; la cita comercial queda en el sistema. |
+| CRAutos | Canal externo de publicación. | Registro de enlace, fecha, responsable y estado; integración automática solo si el canal lo permite. |
+| Facebook Marketplace | Canal externo de publicación y captación. | Principalmente control manual o semiautomático; no se asume publicación automática garantizada. |
+| Encuentra24 | Canal externo de publicación. | Registro de estado y tareas pendientes; integración automática solo si existe mecanismo confiable. |
+| Correo / notificaciones | Alertas internas para cambios, tareas o fallas. | Servicio de salida para avisos. |
+
+### 5.4 Aclaraciones de delimitación
+
+- El sitio web propio se trata como canal de salida de la solución cuando muestra datos desde el inventario interno.
+- El comprador puede interactuar directamente con el sitio web propio o por canales externos; en ambos casos, el seguimiento comercial queda en clientes potenciales.
+- CRAutos, Facebook Marketplace y Encuentra24 no se asumen como integraciones automáticas. Pueden ser manuales, semiautomáticas o automáticas según capacidades reales.
+- Google Drive guarda archivos, pero no decide si un vehículo está listo para publicar. Esa regla queda dentro del sistema.
+- Google Calendar apoya la agenda, pero la cita comercial y su relación con el vehículo y el comprador se controlan internamente.
+- WhatsApp Business es un canal de conversación. La fuente de verdad del cliente potencial y de la siguiente acción es el sistema.
+
+### 5.5 Detalles de la vista
+
+| Elemento | Tipo | Descripción |
+|---|---|---|
+| Gestión de venta de vehículos | Sistema principal | Centraliza inventario, estados, precios, clientes potenciales, citas, documentos, publicaciones y comisiones. |
+| Personas del negocio | Actores humanos | Usan el sistema para operar, vender, publicar, documentar o cerrar ventas. |
+| Cliente vendedor o consignante | Actor humano externo | Entrega el vehículo y necesita seguimiento del proceso comercial. |
+| Cliente comprador | Actor humano externo | Solicita información y puede generar clientes potenciales o citas. |
+| Canales externos de publicación | Sistemas externos | Muestran vehículos fuera del sistema, pero no son la fuente oficial de precio o disponibilidad. |
+| Servicios Google | Sistemas externos | Apoyan archivos y calendario, sin reemplazar las reglas comerciales internas. |
+| Correo / notificaciones | Sistema externo | Entrega avisos internos sobre cambios, tareas y fallas. |
+
+### 5.6 Justificación de la vista
+
+La vista aclara que el sistema no trabaja aislado, pero tampoco deja que los canales externos controlen la operación. El valor está en centralizar la información que hoy vive dispersa y en mostrar qué tan actualizados están los canales externos respecto a la fuente interna.
+
+Esta delimitación evita prometer integraciones que el alcance no garantiza. También permite diseñar módulos separados para inventario, clientes potenciales, publicaciones, agenda, documentos, comisiones e integraciones, con reglas claras para cada cambio de estado.

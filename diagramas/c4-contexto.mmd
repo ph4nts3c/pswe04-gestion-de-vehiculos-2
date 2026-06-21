@@ -1,0 +1,47 @@
+flowchart LR
+
+  %% Personas
+  subgraph Personas["Personas"]
+    direction TB
+    Duenio["Dueño del negocio"]
+    Vendedor["Vendedor"]
+    Consignante["Cliente vendedor<br/>(consignante)"]
+    Comprador["Cliente comprador"]
+    Publicaciones["Encargado de<br/>publicaciones"]
+    Comisiones["Responsable de<br/>comisiones"]
+    FotosDocs["Encargado de<br/>fotos y documentos"]
+  end
+
+  %% Sistema central
+  Sistema["Gestión de venta de vehículos<br/><br/>Fuente de verdad interna:<br/>inventario, estados, precios, leads,<br/>citas, publicaciones, documentos<br/>y comisiones"]
+
+  %% Sistemas externos
+  subgraph Externos["Sistemas y canales externos"]
+    direction TB
+    WhatsApp["WhatsApp Business"]
+    Drive["Google Drive"]
+    Calendar["Google Calendar"]
+    CRAutos["CR Autos"]
+    Marketplace["Facebook Marketplace"]
+    Encuentra24["Encuentra24"]
+    Correo["Correo / notificaciones"]
+  end
+
+  %% Relaciones desde personas hacia el sistema
+  Duenio -->|"consulta reportes y aprueba cambios"| Sistema
+  Vendedor -->|"atiende leads y actualiza vehículos"| Sistema
+  Consignante -->|"entrega datos y recibe seguimiento"| Sistema
+  Comprador -->|"consulta disponibilidad y agenda"| Sistema
+  Publicaciones -->|"publica y actualiza canales"| Sistema
+  Comisiones -->|"revisa comisiones y venta"| Sistema
+  FotosDocs -->|"carga fotos y documentos"| Sistema
+
+  %% Relaciones del sistema con canales externos
+  Sistema -->|"registra leads / seguimiento"| WhatsApp
+  Sistema -->|"guarda enlaces y estado de archivos"| Drive
+  Sistema -->|"crea o consulta citas"| Calendar
+  Sistema -->|"estado de publicación"| CRAutos
+  Sistema -->|"estado de publicación"| Marketplace
+  Sistema -->|"estado de publicación"| Encuentra24
+  Sistema -->|"alertas internas"| Correo
+
