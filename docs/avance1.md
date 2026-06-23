@@ -31,7 +31,17 @@ Para evitar que el sistema termine siendo solo un CRUD de inventario convenciona
 - CRAutos, Facebook Marketplace y Encuentra24 se tratan como canales externos. Cuando no exista integración confiable, el sistema registra el estado de publicación y genera tareas manuales.
 - El sitio web propio se considera parte de la solución cuando muestra el inventario desde la fuente de verdad interna.
 
-### 1.4 Reglas de consistencia con canales externos
+### 1.4 Relación del comprador con la solución
+
+En este proyecto aplican ambos modelos de interacción con el comprador.
+
+El comprador puede consultar el sitio web propio para revisar vehículos disponibles, fotos, precio, disponibilidad y opciones para solicitar una visita. En ese caso, el sitio web actúa como canal público de la solución, pero no reemplaza al sistema central. La información que muestra debe salir del repositorio interno.
+
+El comprador también puede llegar por canales externos, como WhatsApp Business, CRAutos, Facebook Marketplace o Encuentra24. En esos casos, el vendedor registra el contacto como cliente potencial, lo asocia con el vehículo de interés y define la siguiente acción comercial.
+
+En ambos caminos, el seguimiento formal queda dentro del sistema. Las conversaciones, publicaciones externas o consultas del sitio web no son la fuente oficial del estado del vehículo; sirven como canales de entrada o consulta.
+
+### 1.5 Reglas de consistencia con canales externos
 
 | Situación | Respuesta esperada del sistema |
 |---|---|
@@ -42,7 +52,7 @@ Para evitar que el sistema termine siendo solo un CRUD de inventario convenciona
 | Falla de integración | No revierte el cambio interno. Registra el error, programa reintento cuando aplique y deja visible la tarea pendiente. |
 | Datos recibidos por WhatsApp | Permite convertir la conversación en cliente potencial, asociarlo a un vehículo y registrar la siguiente acción. |
 
-### 1.5 Alcance dentro del sistema
+### 1.6 Alcance dentro del sistema
 
 - Registro y administración de vehículos en consignación.
 - Control del estado del vehículo mediante un ciclo de vida definido.
@@ -56,7 +66,7 @@ Para evitar que el sistema termine siendo solo un CRUD de inventario convenciona
 - Registro de comisiones o montos ligados a la venta.
 - Auditoría de cambios de precio, estado, publicación, documentos y citas.
 
-### 1.6 Alcance fuera del sistema
+### 1.7 Alcance fuera del sistema
 
 - Procesamiento directo de pagos bancarios.
 - Traspaso legal completo del vehículo.
@@ -66,7 +76,7 @@ Para evitar que el sistema termine siendo solo un CRUD de inventario convenciona
 - Chatbot avanzado con IA generativa.
 - Tasación oficial automática del valor del vehículo.
 
-### 1.7 Justificación del alcance
+### 1.8 Justificación del alcance
 
 El alcance se concentra en la operación comercial y administrativa de la consignación. La solución ordena el trabajo de inventario, clientes potenciales, citas, publicaciones, documentos y comisiones, sin asumir tareas legales, bancarias o contables que pertenecen a otros procesos.
 
@@ -114,17 +124,17 @@ Rutas alternas permitidas:
 | Ingresado -> pendiente de documentación | Vendedor o encargado de documentos | Debe existir consignante asociado. | Cambio de estado, usuario, fecha y campos faltantes. |
 | Pendiente de documentación -> pendiente de fotos | Encargado de documentos | Deben estar marcados los documentos mínimos. | Documentos completados y responsable. |
 | Pendiente de fotos -> listo para publicar | Encargado de fotos o vendedor autorizado | Debe existir una galería mínima de fotos. | Fotos agregadas, fecha y responsable. |
-| Listo para publicar -> publicado | Encargado de publicaciones o dueño | Debe existir precio aprobado y descripción comercial. | Canales seleccionados, texto usado y fecha. |
+| Listo para publicar -> publicado | Encargado de publicaciones o dueño del negocio | Debe existir precio aprobado y descripción comercial. | Canales seleccionados, texto usado y fecha. |
 | Publicado -> con cliente potencial activo | Vendedor | Debe registrarse canal de origen y vehículo de interés. | cliente potencial creado, canal, fecha y siguiente acción. |
 | Con cliente potencial activo -> cita agendada | Vendedor | Debe existir fecha, hora y responsable de atención. | Cita creada, comprador y vehículo. |
-| Cita agendada -> reservado | Vendedor autorizado o dueño | Debe confirmarse comprador y monto o condición de reserva. | Reserva creada, fecha, usuario y condiciones. |
-| Reservado -> vendido | Dueño o responsable financiero | Debe registrarse cierre y comisión. | Venta cerrada, monto, comisión y responsable. |
-| Publicado / reservado -> retirado | Dueño o vendedor autorizado | Debe indicarse el motivo del retiro. | Retiro, motivo, fecha y responsable. |
+| Cita agendada -> reservado | Vendedor autorizado o dueño del negocio | Debe confirmarse comprador y monto o condición de reserva. | Reserva creada, fecha, usuario y condiciones. |
+| Reservado -> vendido | Dueño del negocio o responsable financiero | Debe registrarse cierre y comisión. | Venta cerrada, monto, comisión y responsable. |
+| Publicado / reservado -> retirado | Dueño del negocio o vendedor autorizado | Debe indicarse el motivo del retiro y si fue solicitado por el consignante. | Retiro, motivo, fecha y responsable. |
 
 ### 2.4 Transiciones prohibidas y bloqueos
 
 - No se puede publicar un vehículo si faltan documentos o fotos.
-- No se puede vender un vehículo que nunca fue reservado o aprobado por el dueño.
+- No se puede vender un vehículo que nunca fue reservado o aprobado por el dueño del negocio o por un responsable autorizado.
 - No se pueden crear nuevas citas para un vehículo vendido o retirado.
 - No se pueden crear nuevas reservas para un vehículo reservado, vendido o retirado.
 - No se puede cambiar el precio sin guardar valor anterior, valor nuevo, usuario y fecha.
@@ -139,7 +149,7 @@ Rutas alternas permitidas:
 | Cambia el precio | Marca cada publicación como actualizada, pendiente de actualización o fallida. |
 | Pasa a reservado | Marca publicaciones como pendientes de cambio de disponibilidad y alerta a ventas. |
 | Pasa a vendido | Genera tarea de retiro o cierre por canal y bloquea nuevas citas. |
-| Pasa a retirado | Genera tarea para pausar o eliminar publicaciones y guarda motivo. 
+| Pasa a retirado | Genera tarea para pausar o eliminar publicaciones y guarda motivo. |
 
 ## 3. Stakeholders y drivers arquitectónicos
 
@@ -276,11 +286,13 @@ Justificación: los documentos no deben circular como enlaces sin control. El si
 
 ### 5.1 Descripción de la vista
 
-La vista de contexto C4 muestra a Gestión de venta de vehículos como el sistema central que ordena la operación de venta por consignación. La vista separa tres grupos: personas que usan o dependen del sistema, el sistema central como repositorio centralizado, y los canales o servicios externos que se integran o se registran como parte de la operación.
+La vista de contexto C4 muestra a Gestión de venta de vehículos como el sistema central que ordena la operación de venta por consignación. La vista separa cuatro grupos: personas que usan o dependen del sistema, la solución propia, los canales externos manuales o semiautomáticos y los servicios de soporte.
 
-La delimitación del sistema queda definida así: el inventario, los estados, los precios, los clientes potenciales, las citas comerciales, el historial de cambios, las comisiones y el estado de publicaciones viven dentro de Gestión de venta de vehículos. Los canales externos no son la fuente oficial de esos datos.
+La solución propia está formada por el sistema central y el sitio web propio. El sistema central conserva la fuente de verdad del inventario, estados, precios, clientes potenciales, citas comerciales, historial de cambios, comisiones y estado de publicaciones. El sitio web propio forma parte de la solución cuando muestra el inventario desde esa fuente interna.
 
-<img src="../diagramas/c4-contexto.png">
+Los canales externos, como WhatsApp Business, CRAutos, Facebook Marketplace y Encuentra24, no controlan la operación. Se usan para atraer compradores, conversar con clientes o publicar vehículos, pero el sistema solo registra, sincroniza parcialmente o genera tareas según las capacidades reales de cada canal.
+
+<img src="../diagramas/diagrama_contexto_c4_avance1.png">
 
 *Figura 1. Vista de contexto C4 del sistema Gestión de venta de vehículos.*
 
@@ -291,28 +303,30 @@ La delimitación del sistema queda definida así: el inventario, los estados, lo
 | Dueño del negocio | Consulta operación, aprueba cambios sensibles, revisa reportes y da seguimiento a ventas y comisiones. |
 | Vendedor | Registra clientes potenciales, consulta vehículos, actualiza datos autorizados, agenda citas y da seguimiento a compradores. |
 | Cliente vendedor o consignante | Entrega el vehículo y requiere seguimiento sobre publicación, interesados, cambios de precio y resultado de venta. |
-| Cliente comprador | Solicita información, consulta disponibilidad por canales habilitados y agenda visitas. |
-| Encargado de publicaciones | Pública vehículos en canales externos y actualiza publicaciones cuando cambian precio, estado o disponibilidad. |
+| Cliente comprador | Puede consultar el sitio web propio, llegar por WhatsApp o ver publicaciones externas. Si muestra interés, el sistema registra la consulta como cliente potencial y el vendedor da seguimiento. |
+| Encargado de publicaciones | Publica vehículos en canales externos y actualiza publicaciones cuando cambian precio, estado o disponibilidad. |
 | Encargado de fotos y documentos | Carga fotos, documentos y confirma que el vehículo está listo para publicación. |
 | Responsable financiero o de comisiones | Registra o revisa comisión, precio final y cierre comercial. |
 | Administrador técnico | Configura usuarios, roles, canales de integración y seguimiento de errores. |
 
 ### 5.3 Sistemas externos y nivel de integración
 
-| Sistema externo | Relación con el sistema | Nivel de integración esperado |
+| Sistema o canal | Relación con el sistema | Nivel de integración esperado |
 |---|---|---|
+| Sitio web propio | Canal público de la solución para consultar inventario y solicitar contacto. | Consume datos desde el sistema central y puede generar clientes potenciales. No es la fuente de verdad. |
 | WhatsApp Business | Canal de comunicación con compradores y consignantes. | Registro de clientes potenciales y seguimiento; automatización parcial según capacidades disponibles. |
-| Google Drive | Almacenamiento de fotos y documentos. | Integración para carpetas, enlaces y metadatos; la ficha interna conserva el control. |
-| Google Calendar | Apoyo para citas. | Integración para crear o consultar eventos cuando sea posible; la cita comercial queda en el sistema. |
 | CRAutos | Canal externo de publicación. | Registro de enlace, fecha, responsable y estado; integración automática solo si el canal lo permite. |
 | Facebook Marketplace | Canal externo de publicación y captación. | Principalmente control manual o semiautomático; no se asume publicación automática garantizada. |
 | Encuentra24 | Canal externo de publicación. | Registro de estado y tareas pendientes; integración automática solo si existe mecanismo confiable. |
-| Correo / notificaciones | Alertas internas para cambios, tareas o fallas. | Servicio de salida para avisos. |
+| Google Drive | Servicio de soporte para fotos y documentos. | Integración para carpetas, enlaces y metadatos; la ficha interna conserva el control. |
+| Google Calendar | Servicio de soporte para citas. | Integración para crear o consultar eventos cuando sea posible; la cita comercial queda en el sistema. |
+| Correo / notificaciones | Servicio de soporte para avisos internos. | Servicio de salida para alertas, recordatorios y tareas pendientes. |
 
 ### 5.4 Aclaraciones de delimitación
 
-- El sitio web propio se trata como canal de salida de la solución cuando muestra datos desde el inventario interno.
-- El comprador puede interactuar directamente con el sitio web propio o por canales externos; en ambos casos, el seguimiento comercial queda en clientes potenciales.
+- El sitio web propio forma parte de la solución cuando consulta el inventario interno y permite que un comprador solicite información o una visita.
+- El comprador puede usar dos caminos: consultar el sitio web propio o llegar por canales externos como WhatsApp, CRAutos, Facebook Marketplace o Encuentra24.
+- Cuando el comprador llega por canales externos, el vendedor registra el seguimiento como cliente potencial dentro del sistema.
 - CRAutos, Facebook Marketplace y Encuentra24 no se asumen como integraciones automáticas. Pueden ser manuales, semiautomáticas o automáticas según capacidades reales.
 - Google Drive guarda archivos, pero no decide si un vehículo está listo para publicar. Esa regla queda dentro del sistema.
 - Google Calendar apoya la agenda, pero la cita comercial y su relación con el vehículo y el comprador se controlan internamente.
@@ -325,13 +339,15 @@ La delimitación del sistema queda definida así: el inventario, los estados, lo
 | Gestión de venta de vehículos | Sistema principal | Centraliza inventario, estados, precios, clientes potenciales, citas, documentos, publicaciones y comisiones. |
 | Personas del negocio | Actores humanos | Usan el sistema para operar, vender, publicar, documentar o cerrar ventas. |
 | Cliente vendedor o consignante | Actor humano externo | Entrega el vehículo y necesita seguimiento del proceso comercial. |
-| Cliente comprador | Actor humano externo | Solicita información y puede generar clientes potenciales o citas. |
-| Canales externos de publicación | Sistemas externos | Muestran vehículos fuera del sistema, pero no son la fuente oficial de precio o disponibilidad. |
-| Servicios Google | Sistemas externos | Apoyan archivos y calendario, sin reemplazar las reglas comerciales internas. |
+| Cliente comprador | Actor humano externo | Consulta el sitio web propio o llega por canales externos. Su interés se registra como cliente potencial dentro del sistema. |
+| Canales externos de publicación | Sistemas externos | Muestran vehículos fuera del sistema. El sistema registra enlaces, estado y tareas pendientes, pero no asume control total sobre ellos. |
+| Servicios Google | Servicios de soporte | Apoyan archivos y calendario, sin reemplazar las reglas comerciales internas. |
 | Correo / notificaciones | Sistema externo | Entrega avisos internos sobre cambios, tareas y fallas. |
 
 ### 5.6 Justificación de la vista
 
 La vista aclara que el sistema no trabaja aislado, pero tampoco deja que los canales externos controlen la operación. El valor está en centralizar la información que hoy vive dispersa y en mostrar qué tan actualizados están los canales externos respecto a la fuente interna.
+
+También aclara la relación del comprador con la solución. El comprador puede consultar el sitio web propio o llegar por canales externos, pero el seguimiento formal se registra como cliente potencial dentro del sistema. Así se evita sugerir que todos los compradores usan directamente el sistema central.
 
 Esta delimitación evita prometer integraciones que el alcance no garantiza. También permite diseñar módulos separados para inventario, clientes potenciales, publicaciones, agenda, documentos, comisiones e integraciones, con reglas claras para cada cambio de estado.
