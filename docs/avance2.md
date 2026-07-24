@@ -269,3 +269,658 @@ Estado interno de publicación: PENDIENTE
 Ese desfase se acepta porque el sistema conserva la verdad comercial, bloquea nuevas reservas y muestra el pendiente al responsable. Es preferible a revertir la reserva porque un tercero no respondió.
 
 ---
+# 4. ADRs
+
+## ADR-001 — PostgreSQL como fuente de verdad interna
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Repositorio centralizado, trazabilidad, respuesta rápida |
+| **Escenarios S07** | 1, 2, 3, 4 y 6 |
+
+### Contexto
+
+Precio, disponibilidad y estado pueden aparecer en varios canales. Los servicios externos pueden quedar temporalmente desactualizados o no estar disponibles.
+
+### Decisión
+
+PostgreSQL mantiene la versión oficial de vehículos, precios, estados, clientes potenciales, citas, reservas, publicaciones, metadatos de documentos, ventas, comisiones, auditoría y eventos Outbox.
+
+Todos los cambios se realizan por la API central.
+
+### Alternativas consideradas
+
+1. usar cada sistema externo como fuente de verdad de su área;
+2. conservar inventario en hojas de cálculo;
+3. mantener una base separada por módulo desde la primera versión.
+
+### Consecuencias positivas
+
+- existe un único lugar para determinar la situación real del vehículo;
+- las consultas no dependen de servicios externos;
+- se facilita la auditoría;
+- sitio público y backoffice consumen los mismos datos.
+
+### Consecuencias negativas
+
+- PostgreSQL se vuelve crítico para la operación;
+- se necesitan respaldos, monitoreo y recuperación;
+- hay que sincronizar cambios hacia canales externos.
+
+---
+
+## ADR-002 — Separar el ciclo de vida del vehículo de clientes potenciales y citas
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Ciclo de vida, consistencia de estado, trazabilidad |
+| **Escenarios S07** | 3 y 5 |
+
+### Contexto
+
+S07 describió `CON_CLIENTE_POTENCIAL_ACTIVO` y `CITA_AGENDADA` como hitos del proceso. En diseño detallado, un vehículo puede tener varios interesados y varias citas de manera concurrente.
+
+### Decisión
+
+El estado del vehículo representa solamente su condición comercial:
+
+```text
+INGRESADO -> PENDIENTE_DOCUMENTACION -> PENDIENTE_FOTOS -> LISTO_PARA_PUBLICAR -> PUBLICADO -> RESERVADO -> VENDIDO
+```
+
+`RETIRADO` funciona como salida permitida desde estados definidos.
+
+Los clientes potenciales, citas y reservas tienen ciclos de vida propios y se relacionan con el vehículo por identificador.
+
+### Alternativas consideradas
+
+1. mantener todas las actividades en un único enum de `Vehicle.state`;
+2. calcular el estado del vehículo únicamente a partir de citas, leads y reservas;
+3. usar un motor BPM para modelar todo el proceso.
+
+### Consecuencias positivas
+
+- permite varios interesados y varias citas simultáneas;
+- el estado del vehículo expresa disponibilidad real;
+- reduce transiciones artificiales como `CITA_AGENDADA -> PUBLICADO`;
+- simplifica reglas de publicación y reserva.
+
+### Consecuencias negativas
+
+- aumenta la cantidad de entidades y estados;
+- algunas pantallas deben combinar información de vehículo, leads y citas;
+- los reportes de “etapa comercial” requieren una proyección, no solo leer `Vehicle.state`.
+
+---
+
+## ADR-003 — El Gestor del ciclo de vida controla toda transición de vehículo
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Ciclo de vida, seguridad, auditoría |
+| **Escenarios S07** | 2, 3 y 6 |
+
+### Contexto
+
+El estado del vehículo controla qué operaciones son válidas. Un `UPDATE state='VENDIDO'` directo permitiría saltarse permisos, precondiciones, auditoría y efectos sobre publicaciones.
+
+### Decisión
+
+Todo cambio de estado pasa por `VehicleLifecycleService`, que valida:
+
+- transición permitida;
+- autorización del actor;
+- versión concurrente del vehículo;
+- precondiciones del dominio;
+- cambios relacionados;
+- auditoría;
+- evento Outbox cuando existan efectos externos.
+
+No se expone un endpoint CRUD para modificar `state` directamente.
+
+### Alternativas consideradas
+
+1. validar únicamente en la interfaz;
+2. distribuir las reglas entre controladores y servicios;
+3. usar un motor de workflow desde la primera versión.
+
+### Consecuencias positivas
+
+- existe un único punto para proteger las transiciones;
+- las reglas pueden probarse unitariamente;
+- una pantalla o integración no puede saltarse el ciclo de vida;
+- el cambio se coordina con auditoría y publicaciones.
+
+### Consecuencias negativas
+
+- el componente concentra reglas importantes;
+- cambiar el ciclo de vida exige actualizar pruebas y políticas;
+- debe evitarse convertir el servicio en una clase con demasiadas responsabilidades.
+
+---
+
+## ADR-004 — Adaptadores separados para cada sistema externo
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Integraciones con distinto nivel de madurez, crecimiento de canales |
+| **Escenarios S07** | 4 |
+
+### Contexto
+
+Google Drive, Google Calendar, WhatsApp Business y marketplaces tienen capacidades y contratos diferentes. Algunos canales pueden no ofrecer una API adecuada.
+
+### Decisión
+
+El núcleo define puertos como:
+
+```text
+DocumentStoragePort
+CalendarPort
+PublicationChannelPort
+NotificationPort
+```
+
+Cada proveedor implementa su adaptador. Un canal manual implementa la misma intención de negocio creando una tarea en vez de ejecutar una API.
+
+### Alternativas consideradas
+
+1. llamadas directas a proveedores desde módulos internos;
+2. un único servicio con condicionales por proveedor;
+3. manejar canales manuales fuera del sistema.
+
+### Consecuencias positivas
+
+- cambios de proveedor quedan aislados;
+- reglas internas pueden probarse con dobles de prueba;
+- agregar un canal no cambia el ciclo de vida del vehículo;
+- canales automáticos y manuales usan un modelo común de publicación.
+
+### Consecuencias negativas
+
+- aumenta el número de interfaces y clases;
+- cada adaptador necesita manejo propio de autenticación y errores;
+- se requiere monitoreo por canal.
+
+---
+
+## ADR-005 — Publicaciones con estado propio y Outbox transaccional
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Consistencia con publicaciones externas, resiliencia |
+| **Escenarios S07** | 2, 3 y 4 |
+
+### Contexto
+
+Una reserva, venta, retiro o cambio de precio debe quedar confirmado aunque un marketplace no responda.
+
+### Decisión
+
+Cada publicación externa tiene estado propio:
+
+```text
+ACTUALIZADA
+PENDIENTE
+FALLIDA
+MANUAL
+CERRADA
+```
+
+La API escribe el cambio de negocio y el evento Outbox en la misma transacción. El procesador de integraciones ejecuta después la actualización externa.
+
+### Alternativas consideradas
+
+1. esperar la API externa dentro de la solicitud del usuario;
+2. confirmar el dominio y publicar un mensaje después sin garantía transaccional;
+3. introducir un broker de mensajería adicional desde el inicio.
+
+### Consecuencias positivas
+
+- el negocio no depende del tiempo de respuesta de terceros;
+- el evento no se pierde entre `COMMIT` y publicación;
+- se soportan reintentos e idempotencia;
+- el pendiente queda visible.
+
+### Consecuencias negativas
+
+- existe consistencia eventual;
+- se necesita un worker y monitoreo;
+- aparecen estados operativos adicionales.
+
+---
+
+## ADR-006 — Archivos en Google Drive y metadatos en PostgreSQL
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Seguridad, privacidad, repositorio centralizado |
+| **Escenarios S07** | 6 |
+
+### Contexto
+
+Google Drive es adecuado para almacenar archivos, pero un archivo o enlace aislado no permite aplicar reglas de negocio ni saber su estado dentro del proceso.
+
+### Decisión
+
+El archivo físico se conserva en Drive. PostgreSQL guarda:
+
+- identificador interno;
+- vehículo asociado;
+- tipo de documento;
+- referencia de Drive;
+- estado de revisión;
+- clasificación de sensibilidad;
+- responsable y fechas;
+- información de auditoría necesaria.
+
+Las reglas de completitud documental consultan metadatos internos.
+
+### Alternativas consideradas
+
+1. guardar binarios en PostgreSQL;
+2. usar solo carpetas de Drive;
+3. implementar almacenamiento propio desde el inicio.
+
+### Consecuencias positivas
+
+- Drive no se convierte en motor de reglas;
+- se puede saber si la documentación está completa sin consultar Drive en cada operación;
+- se mantiene trazabilidad;
+- la base transaccional no almacena binarios grandes.
+
+### Consecuencias negativas
+
+- hay que detectar enlaces rotos;
+- permisos de Drive y aplicación deben mantenerse alineados;
+- se requieren verificaciones periódicas para archivos relevantes.
+
+---
+
+## ADR-007 — Auditoría de solo inserción para cambios sensibles
+
+| Campo | Valor |
+|---|---|
+| **Estado** | Aceptado |
+| **Fecha** | 2026-07-23 |
+| **Drivers relacionados** | Trazabilidad comercial, seguridad |
+| **Escenarios S07** | 2, 3 y 6 |
+
+### Contexto
+
+Cambios de precio, estado, reserva, documentos, citas y publicaciones deben conservar responsable, fecha y motivo cuando aplique.
+
+### Decisión
+
+Se utiliza una bitácora funcional de solo inserción. Cada registro conserva como mínimo:
+
+- entidad e identificador;
+- acción;
+- actor;
+- fecha/hora;
+- valor anterior y nuevo cuando corresponda;
+- motivo;
+- origen;
+- `correlationId`.
+
+La bitácora no reemplaza los logs técnicos.
+
+### Alternativas consideradas
+
+1. confiar únicamente en logs de aplicación;
+2. usar solo `updated_at` y `updated_by`;
+3. adoptar Event Sourcing completo.
+
+### Consecuencias positivas
+
+- permite reconstruir cambios sensibles;
+- facilita investigar diferencias de precio o estado;
+- soporta trazabilidad sin exigir Event Sourcing.
+
+### Consecuencias negativas
+
+- aumenta el volumen de datos;
+- hay que evitar guardar secretos o datos personales innecesarios;
+- se debe controlar quién puede consultar la bitácora.
+
+---
+
+# 5. Primer componente detallado: Gestor del ciclo de vida del vehículo
+
+## 5.1 Responsabilidad
+
+El **Gestor del ciclo de vida del vehículo** pertenece al módulo de Inventario de la API central.
+
+Su responsabilidad es decidir y ejecutar cambios que modifican la condición comercial del vehículo. No administra el ciclo completo de clientes potenciales ni de citas; esos procesos pertenecen a sus respectivos módulos.
+
+El componente controla:
+
+- estado actual del vehículo;
+- transición solicitada;
+- permisos;
+- precondiciones;
+- concurrencia;
+- cambios relacionados a reserva o cierre;
+- auditoría;
+- efectos internos sobre publicaciones;
+- evento Outbox para efectos externos.
+
+## 5.2 Invariantes principales
+
+1. Un vehículo `VENDIDO` o `RETIRADO` no acepta nuevas citas ni reservas.
+2. Un vehículo solo puede tener una reserva `ACTIVA`.
+3. Un vehículo `RESERVADO` no puede recibir una segunda reserva activa.
+4. Un cambio de estado no puede omitir auditoría.
+5. Una transición que afecte publicaciones registra el efecto pendiente en la misma transacción.
+6. Ninguna API externa decide el estado del vehículo.
+7. El estado no se modifica mediante un endpoint CRUD genérico.
+
+## 5.3 Matriz de transiciones del vehículo
+
+| Origen | Destino | Actor autorizado | Precondiciones | Efectos principales |
+|---|---|---|---|---|
+| `INGRESADO` | `PENDIENTE_DOCUMENTACION` | Vendedor / encargado de documentos | Consignante asociado | Registra faltantes y auditoría |
+| `PENDIENTE_DOCUMENTACION` | `PENDIENTE_FOTOS` | Encargado de documentos | Documentación mínima completa | Habilita etapa fotográfica |
+| `PENDIENTE_FOTOS` | `LISTO_PARA_PUBLICAR` | Encargado de fotos / vendedor autorizado | Galería mínima + ficha comercial | Habilita preparación de publicación |
+| `LISTO_PARA_PUBLICAR` | `PUBLICADO` | Encargado de publicaciones / dueño | Precio aprobado + descripción | Sitio propio visible + publicaciones por canal |
+| `PUBLICADO` | `RESERVADO` | Vendedor autorizado / dueño | Comprador + condición de reserva + sin reserva activa | Crea reserva, bloquea otra reserva y marca publicaciones pendientes |
+| `RESERVADO` | `PUBLICADO` | Vendedor autorizado / dueño | Cancelación con motivo | Cancela reserva y restablece disponibilidad |
+| `RESERVADO` | `VENDIDO` | Dueño / responsable financiero autorizado | Cierre y comisión registrados | Convierte reserva, bloquea operación y cierra publicaciones |
+| `PUBLICADO` | `VENDIDO` | Dueño | Aprobación explícita de venta sin reserva + cierre y comisión | Venta directa excepcional, auditada |
+| `INGRESADO`, `PENDIENTE_DOCUMENTACION`, `PENDIENTE_FOTOS`, `LISTO_PARA_PUBLICAR`, `PUBLICADO`, `RESERVADO` | `RETIRADO` | Dueño / vendedor autorizado según política | Motivo obligatorio | Bloquea operación y retira publicaciones |
+
+## 5.4 Efecto del estado del vehículo sobre publicaciones
+
+| Estado del vehículo | Sitio web propio | Publicaciones externas | Acción interna |
+|---|---|---|---|
+| `INGRESADO` | Oculto | No crear | Ninguna |
+| `PENDIENTE_DOCUMENTACION` | Oculto | No crear | Bloqueo de publicación |
+| `PENDIENTE_FOTOS` | Oculto | No crear | Bloqueo de publicación |
+| `LISTO_PARA_PUBLICAR` | Oculto | Preparar | Crear registros/tareas según canales seleccionados |
+| `PUBLICADO` | Visible | Activas | Mantener `ACTUALIZADA` o señalar pendientes |
+| `RESERVADO` | Mostrar “Reservado” u ocultar según política | Actualizar disponibilidad | Marcar cada publicación `PENDIENTE` hasta confirmar cambio |
+| `VENDIDO` | No disponible | Cerrar/retirar | Generar acciones de cierre por canal |
+| `RETIRADO` | Oculto | Retirar/pausar | Generar acciones de retiro por canal |
+
+## 5.5 Diagrama de clases de diseño
+
+<img src="../diagramas/diagrama_clases_avance2.png">
+
+*Figura 2. Diagrama de clases del Gestor del ciclo de vida del vehículo.*
+
+## 5.6 Flujo principal: reservar un vehículo publicado
+
+Se detalla `PUBLICADO -> RESERVADO` porque combina permisos, concurrencia, reserva, auditoría y efectos sobre publicaciones.
+
+### Precondiciones
+
+- el vehículo existe;
+- el estado actual es `PUBLICADO`;
+- el actor tiene permiso de reserva;
+- existe un comprador identificado;
+- se registró la condición de reserva;
+- no existe otra reserva activa;
+- la versión enviada por el cliente coincide con la versión actual del vehículo.
+
+### Resultado
+
+- se crea una `Reservation` con estado `ACTIVA`;
+- `Vehicle.state` cambia a `RESERVADO`;
+- se incrementa `Vehicle.version`;
+- cada publicación activa queda `PENDIENTE` de actualizar disponibilidad;
+- se inserta auditoría;
+- se inserta `VehicleStateChangedEvent` en Outbox;
+- se confirma toda la operación en una sola transacción;
+- la actualización externa ocurre después del `COMMIT`.
+
+## 5.7 Diagrama de secuencia
+
+<img src="../diagramas/diagrama_secuencia_avance2.png">
+
+*Figura 3. Secuencia principal para reservar un vehículo.*
+
+## 5.8 Control de concurrencia de reservas
+
+La lógica de aplicación verifica que no exista una reserva activa. Además, PostgreSQL aplica una segunda defensa mediante una restricción de unicidad para reservas activas por vehículo.
+
+Conceptualmente:
+
+```sql
+CREATE UNIQUE INDEX uq_active_reservation_per_vehicle
+ON vehicle_reservation(vehicle_id)
+WHERE status = 'ACTIVA';
+```
+
+Así, aunque dos solicitudes concurrentes superen casi al mismo tiempo una consulta previa, la base de datos impide confirmar dos reservas activas.
+
+También se utiliza `Vehicle.version` para control optimista. Una transición actualiza el vehículo únicamente si la versión coincide con la leída por el cliente.
+
+## 5.9 Análisis de robustez
+
+<img src="../diagramas/diagrama_robustez_avance2.png">
+
+*Figura 4. Análisis de robustez de la transición `PUBLICADO -> RESERVADO`.*
+
+### Frontera
+
+`Detalle del vehículo` y `VehicleLifecycleController` reciben la intención del usuario, validan formato y convierten HTTP en un comando. No deciden si una transición es válida.
+
+### Control
+
+`VehicleLifecycleService` coordina el caso de uso. Las reglas se distribuyen por responsabilidad:
+
+- `AuthorizationService`: quién puede ejecutar la acción;
+- `TransitionPolicy`: qué estados pueden conectarse;
+- `PreconditionValidator`: qué datos deben existir;
+- `PublicationEffectService`: qué publicaciones quedan pendientes;
+- `AuditService`: qué evidencia funcional se registra;
+- `OutboxPort`: qué efecto externo se debe procesar después.
+
+### Entidades
+
+`Vehicle`, `Reservation`, `ExternalPublication`, `AuditEvent` y `OutboxEvent` representan información persistente del dominio. La representación de un vehículo en Facebook, CRAutos o Encuentra24 nunca reemplaza a `Vehicle`.
+
+## 5.10 Riesgos y controles del diseño
+
+| Riesgo | Control |
+|---|---|
+| La interfaz intenta escribir un estado libremente | No existe endpoint CRUD para `state`; toda transición pasa por `VehicleLifecycleService`. |
+| Dos vendedores reservan el mismo vehículo | Validación de negocio + versión optimista + índice único de reserva activa. |
+| Una solicitud se reenvía por timeout | `Idempotency-Key` devuelve el resultado ya procesado. |
+| Un usuario trabaja con una versión vieja | `If-Match` detecta la versión obsoleta. |
+| Un marketplace falla después de reservar | Outbox conserva el efecto pendiente; la reserva interna no se revierte. |
+| Se pierde la identidad de quien cambió el estado | Auditoría se inserta en la misma transacción. |
+| Existen varios clientes potenciales o citas | Se manejan como entidades separadas y no cambian por sí solas `Vehicle.state`. |
+
+---
+
+# 6. Contratos de interfaz del componente
+
+## 6.1 Consultar transiciones disponibles
+
+```http
+GET /api/vehicles/{vehicleId}/available-transitions
+Authorization: Bearer <token>
+```
+
+### Respuesta `200 OK`
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "currentState": "PUBLICADO",
+  "version": 12,
+  "availableTransitions": [
+    {
+      "targetState": "RESERVADO",
+      "requiredFields": ["buyerId", "reservationCondition"],
+      "requiresReason": false
+    },
+    {
+      "targetState": "VENDIDO",
+      "requiredFields": ["buyerId", "saleAmount", "commission", "directSaleApproval"],
+      "requiresReason": true
+    },
+    {
+      "targetState": "RETIRADO",
+      "requiredFields": ["reason"],
+      "requiresReason": true
+    }
+  ]
+}
+```
+
+La respuesta considera tanto el estado como los permisos del actor.
+
+## 6.2 Ejecutar transición a reservado
+
+```http
+POST /api/vehicles/{vehicleId}/transitions
+Authorization: Bearer <token>
+Content-Type: application/json
+If-Match: "12"
+Idempotency-Key: 52e18c34-1a21-4633-9728-b8d196071fac
+```
+
+### Solicitud
+
+```json
+{
+  "targetState": "RESERVADO",
+  "reason": "Cliente confirma reserva",
+  "context": {
+    "buyerId": "d4d2c237-1295-4ad7-96f2-1dc8ffebcc38",
+    "reservationCondition": "Depósito confirmado"
+  }
+}
+```
+
+### Respuesta `200 OK`
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "previousState": "PUBLICADO",
+  "currentState": "RESERVADO",
+  "version": 13,
+  "changedAt": "2026-07-23T20:10:00-06:00",
+  "reservation": {
+    "status": "ACTIVA",
+    "buyerId": "d4d2c237-1295-4ad7-96f2-1dc8ffebcc38"
+  },
+  "externalEffects": [
+    {
+      "type": "UPDATE_PUBLICATION_AVAILABILITY",
+      "status": "PENDING"
+    }
+  ]
+}
+```
+
+## 6.3 Errores del contrato
+
+| HTTP | Código funcional | Caso |
+|---|---|---|
+| `400` | `INVALID_REQUEST` | Faltan datos obligatorios. |
+| `401` | `UNAUTHENTICATED` | Token ausente o inválido. |
+| `403` | `TRANSITION_NOT_AUTHORIZED` | El actor no tiene permiso. |
+| `404` | `VEHICLE_NOT_FOUND` | Vehículo inexistente o no visible. |
+| `409` | `INVALID_STATE_TRANSITION` | No existe la transición solicitada desde el estado actual. |
+| `409` | `VEHICLE_ALREADY_RESERVED` | Ya existe una reserva activa. |
+| `409` | `PRECONDITION_NOT_MET` | Falta documentación, comprador, aprobación u otra condición. |
+| `412` | `STALE_VEHICLE_VERSION` | `If-Match` no coincide con la versión actual. |
+| `422` | `BUSINESS_RULE_VIOLATION` | La solicitud es válida en formato, pero viola una regla de negocio. |
+
+### Ejemplo `412 Precondition Failed`
+
+```json
+{
+  "code": "STALE_VEHICLE_VERSION",
+  "message": "El vehículo cambió desde la última consulta.",
+  "currentVersion": 13,
+  "correlationId": "90ed103b-71fa-48cb-85ae-0ba68bc23430"
+}
+```
+
+## 6.4 Diferencia entre idempotencia y concurrencia
+
+`Idempotency-Key` y `If-Match` resuelven problemas distintos.
+
+- **Idempotency-Key:** evita ejecutar dos veces la misma intención cuando el cliente reenvía una solicitud por timeout o error de red.
+- **If-Match:** evita que una solicitud basada en la versión 12 sobrescriba un cambio que ya produjo la versión 13.
+
+Ambos se mantienen porque una reserva necesita protección frente a reintentos y frente a modificaciones concurrentes.
+
+## 6.5 Contratos internos hacia otros módulos
+
+### Puerto de efectos de publicación
+
+```java
+public interface PublicationEffectPort {
+    void markForVehicleStateChange(
+        UUID vehicleId,
+        VehicleState previousState,
+        VehicleState newState
+    );
+}
+```
+
+### Puerto Outbox
+
+```java
+public interface OutboxPort {
+    void append(DomainEvent event);
+}
+```
+
+### Puerto de reservas
+
+```java
+public interface ReservationRepository {
+    boolean existsActiveByVehicle(UUID vehicleId);
+    Optional<Reservation> findActiveByVehicle(UUID vehicleId);
+    Reservation save(Reservation reservation);
+}
+```
+
+Estos contratos evitan que el Gestor conozca detalles de PostgreSQL o de los proveedores externos.
+
+## 6.6 Contrato del evento Outbox
+
+```json
+{
+  "eventId": "af33afe4-189b-4801-90cf-3f457ffedb15",
+  "eventType": "VehicleStateChanged",
+  "aggregateId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "occurredAt": "2026-07-23T20:10:00-06:00",
+  "payload": {
+    "previousState": "PUBLICADO",
+    "newState": "RESERVADO",
+    "changedBy": "user-123",
+    "publicationAction": "UPDATE_AVAILABILITY"
+  }
+}
+```
+
+### Reglas
+
+- `eventId` es único.
+- El evento se inserta en la misma transacción que el cambio de estado.
+- El consumidor no cambia el estado del vehículo.
+- Un fallo no elimina el evento.
+- Los reintentos conservan número de intento y último error.
+- El adaptador debe ser idempotente cuando el proveedor permita utilizar una clave externa de idempotencia.
+
+---
