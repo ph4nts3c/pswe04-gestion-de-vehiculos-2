@@ -924,3 +924,125 @@ Estos contratos evitan que el Gestor conozca detalles de PostgreSQL o de los pro
 - El adaptador debe ser idempotente cuando el proveedor permita utilizar una clave externa de idempotencia.
 
 ---
+
+# 7. Persistencia mínima relacionada
+
+## 7.1 `vehicle`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador interno |
+| `vin` / `plate` | Identificación del vehículo |
+| `asking_price` | Precio oficial |
+| `state` | Estado comercial |
+| `version` | Control de concurrencia optimista |
+| `updated_at` | Última modificación |
+
+## 7.2 `vehicle_reservation`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador de reserva |
+| `vehicle_id` | Vehículo asociado |
+| `buyer_id` | Comprador |
+| `condition` | Condición de reserva |
+| `status` | ACTIVA, CANCELADA o CONVERTIDA_VENTA |
+| `created_by` / `created_at` | Trazabilidad |
+| `cancelled_by` / `cancelled_at` | Trazabilidad de cancelación cuando aplique |
+
+### Restricción de integridad
+
+Debe existir como máximo una fila `ACTIVA` por `vehicle_id`.
+
+## 7.3 `lead`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador |
+| `vehicle_id` | Vehículo de interés |
+| `buyer_id` | Persona interesada cuando exista |
+| `origin_channel` | WhatsApp, sitio web, CRAutos, Facebook, Encuentra24, otro |
+| `status` | NUEVO, EN_SEGUIMIENTO, DESCARTADO, CONVERTIDO |
+| `next_action_at` | Próxima acción comercial |
+
+## 7.4 `appointment`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador |
+| `vehicle_id` | Vehículo |
+| `lead_id` | Cliente potencial relacionado |
+| `status` | SOLICITADA, AGENDADA, CONFIRMADA, REALIZADA, CANCELADA, NO_ASISTIO |
+| `scheduled_at` | Fecha/hora |
+| `calendar_external_id` | Referencia de Google Calendar cuando exista |
+
+## 7.5 `external_publication`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador interno |
+| `vehicle_id` | Vehículo |
+| `channel` | Canal |
+| `external_url` | Enlace cuando exista |
+| `sync_status` | ACTUALIZADA, PENDIENTE, FALLIDA, MANUAL o CERRADA |
+| `last_error` | Último error |
+| `updated_at` | Última modificación |
+
+## 7.6 `document_metadata`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador interno |
+| `vehicle_id` | Vehículo |
+| `document_type` | Tipo de documento |
+| `drive_reference` | Identificador o URL de Drive |
+| `status` | PENDIENTE, CARGADO, VERIFICADO, RECHAZADO |
+| `sensitivity` | Clasificación de acceso |
+| `created_by` / `created_at` | Trazabilidad |
+
+## 7.7 `audit_event`
+
+| Campo | Propósito |
+|---|---|
+| `id` | Identificador |
+| `entity_type` / `entity_id` | Entidad afectada |
+| `action` | Acción sensible |
+| `old_value` / `new_value` | Valores controlados cuando aplique |
+| `actor_id` | Responsable |
+| `reason` | Motivo |
+| `occurred_at` | Fecha/hora |
+| `correlation_id` | Relación con la solicitud |
+
+## 7.8 `outbox_event`
+
+| Campo | Propósito |
+|---|---|
+| `event_id` | Identificador idempotente |
+| `event_type` | Tipo |
+| `aggregate_id` | Entidad de origen |
+| `payload` | Datos del evento |
+| `status` | PENDING, PROCESSING, PROCESSED o FAILED |
+| `attempts` | Intentos |
+| `next_attempt_at` | Próximo reintento |
+| `created_at` / `processed_at` | Trazabilidad |
+
+---
+
+# 8. Validaciones de diseño previstas
+
+| Prueba | Resultado esperado | Escenario relacionado |
+|---|---|---|
+| Consultar ficha bajo carga normal | p95 < 3 s | Rendimiento |
+| Cambiar precio | valor interno < 2 s + auditoría completa | Integridad/consistencia |
+| Reservar vehículo publicado | estado interno y reserva confirmados < 2 s | Consistencia de estado |
+| Lanzar dos reservas concurrentes | exactamente una reserva `ACTIVA` | Consistencia de estado |
+| Repetir la misma solicitud con igual `Idempotency-Key` | no se crea segunda reserva | Resiliencia |
+| Enviar transición con versión vieja | respuesta `412` y sin sobrescribir datos | Consistencia |
+| Simular marketplace caído | vehículo sigue reservado y publicación queda pendiente/fallida | Resiliencia |
+| Vender vehículo | nuevas citas y reservas quedan bloqueadas | Consistencia de estado |
+| Intentar consultar documento sensible sin permiso | acceso rechazado | Seguridad |
+| Consultar auditoría de un cambio de precio | actor, fecha, valor anterior y nuevo disponibles | Trazabilidad |
+| Crear dos leads para el mismo vehículo | ambos existen sin alterar `Vehicle.state` | Usabilidad/modelado |
+| Crear dos citas para interesados distintos | ambas pueden coexistir según reglas de agenda | Modelado del dominio |
+
+---
