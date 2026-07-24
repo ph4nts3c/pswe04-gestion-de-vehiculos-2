@@ -17,7 +17,15 @@
 | **Fecha de última actualización** | 2026-06-22 |
 
 ---
+## Integrantes
 
+| Integrante | Carné | Usuario GitHub |
+|---|---|---|
+| Alejandro | P000024460 | alejandroch8721 |
+| William | P000013161 | wkelly09 |
+| Rodolfo | P000000555 | ph4nts3c |
+
+---
 ## Historial de versiones
 
 | Versión | Fecha | Hito | Cambios principales | Autor(es) |
