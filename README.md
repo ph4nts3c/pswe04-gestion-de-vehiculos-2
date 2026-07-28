@@ -17,7 +17,15 @@
 | **Fecha de última actualización** | 2026-06-22 |
 
 ---
+## Integrantes
 
+| Integrante | Carné | Usuario GitHub |
+|---|---|---|
+| Alejandro | P000024460 | alejandroch8721 |
+| William | P000013161 | wkelly09 |
+| Rodolfo | P000000555 | ph4nts3c |
+
+---
 ## Historial de versiones
 
 | Versión | Fecha | Hito | Cambios principales | Autor(es) |
@@ -25,3 +33,4 @@
 | 0.1 | 2026-05-26 | Propuesta (S03) | Creación del documento inicial | Alejandro, William, Rodolfo |
 | 0.2 | 2026-06-20 | Avance 1  (S07) | Contexto del sistema, stakeholders, drivers arquitectónicos, escenarios de calidad y vista de contexto C4. | Alejandro, William, Rodolfo |
 | 0.2.1 | 2026-06-22 | Avance 1  (S07) | Ajustes de roles y vista C4 según retroalimentación. | Rodolfo |
+| 0.3.1 | 2026-07-23 | Avance 2  (S07) | Revisión de diseño y vista C4 según retroalimentación. | William |
