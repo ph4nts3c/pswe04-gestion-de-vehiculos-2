@@ -1,0 +1,86 @@
+classDiagram
+    class OutboxEventReader {
+      +claimBatch(limit) List~OutboxEvent~
+    }
+
+    class PublicationSyncCoordinator {
+      +process(event)
+      -ensureActions(event)
+      -processAction(action)
+      -recalculateEventStatus(eventId)
+    }
+
+    class PublicationSyncAction {
+      -UUID eventId
+      -UUID publicationId
+      -SyncActionStatus status
+      -int attempts
+      -Instant nextAttemptAt
+      +markSuccess(providerReference)
+      +markRetry(error, nextAttempt)
+      +moveToDeadLetter(error)
+      +markManualPending(taskId)
+      +markManualCompleted(evidenceId)
+    }
+
+    class PublicationChannelResolver {
+      +resolve(channel) PublicationChannel
+    }
+
+    class PublicationChannel {
+      <<interface>>
+      +execute(command) ChannelResult
+    }
+
+    class RetryPolicy {
+      +decision(attempts, errorType) RetryDecision
+    }
+
+    class ProcessedActionStore {
+      +wasProcessed(eventId, targetId) boolean
+      +markProcessed(eventId, targetId)
+    }
+
+    class IntegrationActionRepository {
+      <<interface>>
+      +findDue(limit)
+      +save(action)
+      +calculateAggregateStatus(eventId) OutboxStatus
+    }
+
+    class ExternalPublicationRepository {
+      <<interface>>
+      +findAffected(event)
+      +save(publication)
+    }
+
+    class OutboxRepository {
+      <<interface>>
+      +findById(eventId)
+      +updateStatus(eventId, status)
+    }
+
+    class ManualTaskRepository {
+      <<interface>>
+      +createIfAbsent(taskKey, details)
+    }
+
+    class CRAutosAdapter
+    class FacebookMarketplaceAdapter
+    class Encuentra24Adapter
+    class ManualPublicationAdapter
+
+    OutboxEventReader --> PublicationSyncCoordinator
+    PublicationSyncCoordinator --> IntegrationActionRepository
+    PublicationSyncCoordinator --> PublicationChannelResolver
+    PublicationSyncCoordinator --> RetryPolicy
+    PublicationSyncCoordinator --> ProcessedActionStore
+    PublicationSyncCoordinator --> ExternalPublicationRepository
+    PublicationSyncCoordinator --> OutboxRepository
+    PublicationChannelResolver --> PublicationChannel
+    PublicationChannel <|.. CRAutosAdapter
+    PublicationChannel <|.. FacebookMarketplaceAdapter
+    PublicationChannel <|.. Encuentra24Adapter
+    PublicationChannel <|.. ManualPublicationAdapter
+    ManualPublicationAdapter --> ManualTaskRepository
+    IntegrationActionRepository --> PublicationSyncAction

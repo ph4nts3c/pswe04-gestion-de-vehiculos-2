@@ -1,0 +1,19 @@
+classDiagram
+    class Specification~T~ {
+      <<interface>>
+      +isSatisfiedBy(candidate) boolean
+      +and(other) Specification
+      +or(other) Specification
+    }
+
+    class HasMinimumDocuments
+    class HasMinimumPhotos
+    class HasApprovedPrice
+    class HasBuyer
+    class HasWithdrawalReason
+
+    Specification <|.. HasMinimumDocuments
+    Specification <|.. HasMinimumPhotos
+    Specification <|.. HasApprovedPrice
+    Specification <|.. HasBuyer
+    Specification <|.. HasWithdrawalReason

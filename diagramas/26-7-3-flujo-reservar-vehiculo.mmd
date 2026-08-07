@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    actor V as Vendedor
+    participant UI as Backoffice
+    participant API as API central
+    participant L as VehicleLifecycleService
+    participant DB as PostgreSQL
+
+    V->>UI: Reservar vehículo
+    UI->>API: POST /vehicles/{id}/transitions + If-Match
+    API->>L: transition(PUBLICADO, RESERVADO)
+    L->>DB: validar versión y reserva activa
+    alt vehículo disponible
+        L->>DB: guardar reserva, estado, auditoría y Outbox
+        DB-->>L: commit
+        L-->>API: RESERVADO, nueva versión
+        API-->>UI: 200 OK
+    else versión vieja o reserva concurrente
+        DB-->>L: conflicto
+        L-->>API: STALE_VERSION / ALREADY_RESERVED
+        API-->>UI: 409/412 sin cambios
+    end

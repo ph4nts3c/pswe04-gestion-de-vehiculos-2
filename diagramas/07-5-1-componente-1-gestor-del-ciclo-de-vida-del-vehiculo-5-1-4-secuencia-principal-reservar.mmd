@@ -1,0 +1,36 @@
+sequenceDiagram
+    actor V as Vendedor
+    participant UI as Backoffice
+    participant C as VehicleLifecycleController
+    participant S as VehicleLifecycleService
+    participant VR as VehicleRepository
+    participant SR as VehicleStateResolver
+    participant ST as PublishedState
+    participant A as AuthorizationService
+    participant R as ReservationService
+    participant PE as PublicationEffectPort
+    participant AU as AuditPort
+    participant O as OutboxPort
+
+    V->>UI: Reservar vehículo
+    UI->>C: POST /vehicles/{id}/transitions\nIf-Match + Idempotency-Key
+    C->>S: transition(command)
+    S->>VR: findById(id)
+    VR-->>S: Vehicle(PUBLICADO, version=12)
+    S->>SR: resolve(PUBLICADO)
+    SR-->>S: PublishedState
+    S->>ST: evaluate(RESERVADO, context)
+    ST-->>S: permiso + especificaciones + efectos
+    S->>A: assertAllowed(actor, RESERVE_VEHICLE)
+    A-->>S: autorizado
+    S->>R: createActive(vehicleId, buyerId, condition)
+    R-->>S: Reservation(ACTIVA)
+    S->>S: vehicle.apply(decision)
+    S->>PE: markForStateChange(PUBLICADO, RESERVADO)
+    S->>AU: append(auditoría)
+    S->>O: append(VehicleStateChanged)
+    S->>VR: saveIfVersion(vehicle, 12)
+    VR-->>S: guardado, version=13
+    S-->>C: TransitionResult
+    C-->>UI: 200 OK
+    UI-->>V: Vehículo reservado

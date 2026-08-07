@@ -1,0 +1,37 @@
+flowchart LR
+    api["«Container»\nAPI central\nRegistra evento y acciones"]
+    db[("PostgreSQL")]
+
+    subgraph worker["«Container» Procesador de integraciones"]
+        reader["«Component»\nOutboxEventReader"]
+        coordinator["«Component»\nPublicationSyncCoordinator"]
+        actionRepo["«Component»\nIntegrationActionRepository"]
+        resolver["«Component»\nPublicationChannelResolver"]
+        retry["«Component»\nRetryPolicy"]
+        idempotency["«Component»\nProcessedActionStore"]
+        autoAdapters["«Components»\nAdaptadores automáticos"]
+        manualAdapter["«Component»\nManualPublicationAdapter"]
+        taskRepo["«Component»\nManualTaskRepository"]
+        telemetry["«Component»\nIntegrationTelemetryPublisher"]
+
+        reader --> coordinator
+        coordinator --> actionRepo
+        coordinator --> resolver
+        coordinator --> retry
+        coordinator --> idempotency
+        coordinator --> telemetry
+        resolver --> autoAdapters
+        resolver --> manualAdapter
+        manualAdapter --> taskRepo
+    end
+
+    providers["CRAutos / Facebook / Encuentra24"]
+    operator["«Container»\nBackoffice de operación"]
+
+    operator -->|"REST/JSON"| api
+    api -->|"JDBC: evento + acciones y tareas"| db
+    reader -->|"claim con bloqueo y vencimiento"| db
+    actionRepo --> db
+    idempotency --> db
+    taskRepo --> db
+    autoAdapters -->|"HTTPS/API"| providers

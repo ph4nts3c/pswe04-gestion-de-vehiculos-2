@@ -1,0 +1,29 @@
+sequenceDiagram
+    autonumber
+    actor U as Usuario autorizado
+    participant C as DocumentController
+    participant S as SecureDocumentService
+    participant P as DocumentAuthorizationPolicy
+    participant R as DocumentMetadataRepository
+    participant D as DocumentStoragePort
+    participant A as AuditPort
+
+    U->>C: GET /vehicles/{v}/documents/{d}/content?purpose=...
+    C->>S: getContent(actor, vehicleId, documentId, purpose)
+    S->>R: find(documentId)
+    R-->>S: metadata(RESTRINGIDA, VERIFICADO)
+    S->>P: authorize(actor, metadata, READ, purpose)
+    P-->>S: permitido
+    S->>A: append(DOCUMENT_ACCESS_GRANTED)
+    S->>D: openStream(driveReference)
+    alt entrega finaliza en el servidor
+        D-->>S: flujo de contenido
+        S->>A: append(DOCUMENT_TRANSFER_COMPLETED)
+        S-->>C: stream con no-store y nombre sanitizado
+        C-->>U: 200 contenido
+    else Drive o transferencia falla
+        D--xS: error
+        S->>A: append(DOCUMENT_TRANSFER_FAILED)
+        S-->>C: 503 sin enlace alternativo
+        C-->>U: 503 DOCUMENT_STORAGE_UNAVAILABLE
+    end

@@ -1,0 +1,35 @@
+flowchart LR
+    leadController["LeadController"]
+    appointmentController["AppointmentController"]
+    leadService["LeadService"]
+    appointmentService["AppointmentSchedulingService"]
+    assignment["SellerAssignmentPolicy"]
+    availability["SellerAvailabilityPolicy"]
+    vehicleRules["VehicleAppointmentPolicy"]
+    auth["AuthorizationService"]
+    leadRepo["LeadRepository"]
+    appointmentRepo["AppointmentRepository"]
+    vehiclePort["VehicleAvailabilityPort"]
+    audit["AuditPort"]
+    outbox["OutboxPort"]
+    db[("PostgreSQL")]
+
+    leadController --> leadService
+    appointmentController --> appointmentService
+    leadService --> leadRepo
+    leadService --> audit
+    appointmentService --> assignment
+    appointmentService --> availability
+    appointmentService --> vehicleRules
+    appointmentService --> auth
+    appointmentService --> leadService
+    appointmentService --> appointmentRepo
+    appointmentService --> vehiclePort
+    appointmentService --> audit
+    appointmentService --> outbox
+
+    leadRepo --> db
+    appointmentRepo --> db
+    audit --> db
+    outbox --> db
+    vehiclePort --> db

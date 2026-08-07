@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant W as OutboxEventReader
+    participant C as IntegrationCoordinator
+    participant A as IntegrationAdapter
+    participant R as IntegrationActionRepository
+    participant O as Operador autorizado
+    participant U as AuditPort
+
+    W->>C: procesar(eventId, actionId)
+    C->>A: execute(action)
+    A-->>C: error no recuperable / intentos agotados
+    C->>R: action = DEAD_LETTER
+    C->>U: append(ACTION_DEAD_LETTERED, correlationId)
+    R-->>O: alerta y detalle sanitizado
+    O->>O: corrige credencial, dato o configuración
+    O->>R: solicitar replay(actionId, motivo)
+    R->>U: append(REPLAY_REQUESTED, actor, motivo)
+    R->>W: crear nueva ejecución relacionada
+    W->>C: reprocesar solo la acción fallida
+    C->>A: execute(action)
+    A-->>C: éxito o duplicado ya aplicado
+    C->>R: action = EXITOSA
+    C->>U: append(ACTION_RECOVERED, actor, referencia)

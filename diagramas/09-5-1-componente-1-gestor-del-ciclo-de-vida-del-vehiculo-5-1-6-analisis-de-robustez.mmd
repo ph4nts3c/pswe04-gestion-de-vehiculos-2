@@ -1,0 +1,23 @@
+flowchart LR
+    boundary["«boundary»\nDetalle del vehículo /\nVehicleLifecycleController"]
+    control["«control»\nVehicleLifecycleService"]
+    resolver["«control»\nVehicleStateResolver"]
+    state["«control»\nVehicleStateBehavior"]
+    spec["«control»\nTransitionSpecification"]
+    reservation["«control»\nReservationService"]
+    vehicle["«entity»\nVehicle"]
+    reserveEntity["«entity»\nReservation"]
+    publication["«entity»\nPublicationSyncAction"]
+    audit["«entity»\nAuditEvent"]
+    outbox["«entity»\nOutboxEvent"]
+
+    boundary --> control
+    control --> resolver
+    resolver --> state
+    control --> spec
+    control --> reservation
+    control --> vehicle
+    reservation --> reserveEntity
+    control --> publication
+    control --> audit
+    control --> outbox

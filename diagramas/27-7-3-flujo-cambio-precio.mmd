@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    actor U as Usuario autorizado
+    participant API as API central
+    participant DB as PostgreSQL
+    participant W as Procesador de integraciones
+    participant A as Adaptador de canal
+    participant T as Gestor de tarea manual
+
+    U->>API: Cambiar precio
+    API->>DB: precio + auditoría + Outbox
+    DB-->>API: commit
+    API-->>U: cambio interno confirmado
+    W->>DB: reclamar acciones
+    alt canal con API
+        W->>A: updatePrice(idempotencyKey)
+        alt proveedor disponible
+            A-->>W: éxito
+            W->>DB: acción EXITOSA
+        else error temporal o permanente
+            A-->>W: error clasificado
+            W->>DB: EN_REINTENTO o DEAD_LETTER
+        end
+    else canal sin API confiable
+        W->>T: crear tarea con SLA y evidencia
+        T->>DB: TAREA_MANUAL_ABIERTA
+    end

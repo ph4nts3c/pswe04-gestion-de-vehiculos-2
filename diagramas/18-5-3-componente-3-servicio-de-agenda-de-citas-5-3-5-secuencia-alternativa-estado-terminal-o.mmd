@@ -1,0 +1,22 @@
+sequenceDiagram
+    actor U as Usuario interno
+    participant C as AppointmentController
+    participant S as AppointmentSchedulingService
+    participant V as VehicleAvailabilityPort
+    participant P as SellerAvailabilityPolicy
+
+    U->>C: Agendar solicitud
+    C->>S: schedule(command)
+    S->>V: getState(vehicleId)
+
+    alt vehículo VENDIDO o RETIRADO
+        V-->>S: VENDIDO
+        S-->>C: VEHICLE_NOT_AVAILABLE
+        C-->>U: 409 Conflict
+    else vehículo disponible
+        V-->>S: PUBLICADO
+        S->>P: evaluate(sellerId, date, duration)
+        P-->>S: conflicto + alternativas
+        S-->>C: APPOINTMENT_TIME_CONFLICT
+        C-->>U: 409 + horarios alternativos
+    end
