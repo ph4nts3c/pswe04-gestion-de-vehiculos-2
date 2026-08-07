@@ -1,0 +1,37 @@
+sequenceDiagram
+    participant R as OutboxEventReader
+    participant C as PublicationSyncCoordinator
+    participant AR as IntegrationActionRepository
+    participant RES as PublicationChannelResolver
+    participant CA as CRAutosAdapter
+    participant MA as ManualPublicationAdapter
+    participant X as CRAutos API
+    participant T as ManualTaskRepository
+    participant V as Verificador
+    participant O as OutboxRepository
+
+    R->>C: process(VehiclePriceChanged)
+    C->>AR: ensureAction(CRAutos)
+    C->>AR: ensureAction(Facebook manual)
+
+    C->>RES: resolve(CRAUTOS)
+    RES-->>C: CRAutosAdapter
+    C->>CA: execute(UpdatePrice)
+    CA->>X: HTTPS PUT + idempotency key
+    X-->>CA: 200 OK
+    CA-->>C: Success
+    C->>AR: CRAutos = EXITOSA
+
+    C->>RES: resolve(FACEBOOK_MANUAL)
+    RES-->>C: ManualPublicationAdapter
+    C->>MA: execute(UpdatePrice)
+    MA->>T: createIfAbsent(actionId + channel)
+    T-->>MA: taskId
+    MA-->>C: ManualTaskRequired(taskId)
+    C->>AR: Facebook = TAREA_MANUAL_ABIERTA
+    C->>O: event = WAITING_MANUAL
+
+    V->>T: verificar evidencia y valor visible
+    T->>AR: markManualCompleted(actionId)
+    AR-->>C: todas las acciones terminales correctas
+    C->>O: event = PROCESSED

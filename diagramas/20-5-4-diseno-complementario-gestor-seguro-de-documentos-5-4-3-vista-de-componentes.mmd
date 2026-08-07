@@ -1,0 +1,27 @@
+flowchart LR
+    controller["DocumentController\nREST boundary"]
+    service["SecureDocumentService\nOrquestación"]
+    authz["DocumentAuthorizationPolicy\nRol + recurso + finalidad"]
+    classifier["DocumentClassificationPolicy"]
+    inspection["DocumentContentInspectionPort\nTipo, tamaño y malware"]
+    repo["DocumentMetadataRepository"]
+    audit["AuditPort"]
+    reconcile["DrivePermissionReconciler"]
+    drivePort["DocumentStoragePort"]
+    driveAdapter["GoogleDriveAdapter"]
+    db[("PostgreSQL")]
+    drive["Google Drive"]
+
+    controller --> service
+    service --> authz
+    service --> classifier
+    service --> inspection
+    service --> repo
+    service --> audit
+    service --> drivePort
+    reconcile --> repo
+    reconcile --> drivePort
+    drivePort --> driveAdapter
+    driveAdapter --> drive
+    repo --> db
+    audit --> db

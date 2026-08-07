@@ -1,0 +1,25 @@
+sequenceDiagram
+    actor V1 as Vendedor A
+    actor V2 as Vendedor B
+    participant S as VehicleLifecycleService
+    participant RR as ReservationRepository
+    participant VR as VehicleRepository
+    participant DB as PostgreSQL
+
+    par Solicitud A
+        V1->>S: reservar(If-Match=12)
+        S->>RR: save(ACTIVA)
+        RR->>DB: INSERT reserva activa
+        DB-->>RR: OK
+        S->>VR: saveIfVersion(vehicle, 12)
+        VR-->>S: version=13
+    and Solicitud B
+        V2->>S: reservar(If-Match=12)
+        S->>RR: save(ACTIVA)
+        RR->>DB: INSERT reserva activa
+        DB-->>RR: violación de unicidad o espera
+        S-->>V2: rollback
+    end
+
+    S-->>V1: 200 OK
+    S-->>V2: 409 VEHICLE_ALREADY_RESERVED\no 412 STALE_VEHICLE_VERSION

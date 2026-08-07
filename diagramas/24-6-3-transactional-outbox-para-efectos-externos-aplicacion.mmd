@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant API as API central
+    participant DB as PostgreSQL
+    participant W as Procesador
+    participant EXT as Canal externo
+
+    API->>DB: BEGIN
+    API->>DB: UPDATE vehículo/publicación
+    API->>DB: INSERT auditoría
+    API->>DB: INSERT outbox_event
+    API->>DB: COMMIT
+    W->>DB: reclamar evento pendiente
+    W->>EXT: ejecutar efecto
+    EXT-->>W: resultado
+    W->>DB: actualizar publicación y evento

@@ -1,0 +1,41 @@
+sequenceDiagram
+    actor B as Comprador
+    actor V as Vendedor
+    participant W as Sitio público
+    participant BO as Backoffice
+    participant C as AppointmentController
+    participant S as AppointmentSchedulingService
+    participant L as LeadService
+    participant VP as VehicleAvailabilityPort
+    participant AP as SellerAssignmentPolicy
+    participant SP as SellerAvailabilityPolicy
+    participant R as AppointmentRepository
+    participant A as AuditPort
+    participant O as OutboxPort
+
+    B->>W: Solicita visita y propone horario
+    W->>C: POST /public/visit-requests
+    C->>S: requestVisit(command)
+    S->>VP: getState(vehicleId)
+    VP-->>S: PUBLICADO
+    S->>L: findOrCreateMinimalLead(contact, vehicleId, SITIO_WEB)
+    L-->>S: Lead
+    S->>R: save(Appointment SOLICITADA)
+    S->>A: append(VISIT_REQUESTED)
+    S-->>C: 201 SOLICITADA
+    C-->>W: solicitud registrada
+
+    V->>BO: Asigna responsable y horario
+    BO->>C: POST /appointments/{id}/schedule\nIf-Match
+    C->>S: schedule(command)
+    S->>VP: getState(vehicleId)
+    VP-->>S: PUBLICADO
+    S->>AP: selectOrValidate(seller, vehicle, date)
+    AP-->>S: sellerId
+    S->>SP: evaluate(sellerId, date, duration)
+    SP-->>S: disponible
+    S->>R: saveScheduledIfNoOverlap(Appointment AGENDADA)
+    S->>A: append(APPOINTMENT_SCHEDULED)
+    S->>O: append(AppointmentScheduled)
+    S-->>C: 200 AGENDADA
+    C-->>BO: cita agendada

@@ -1,0 +1,34 @@
+flowchart LR
+    controller["VehicleLifecycleController\nREST boundary"]
+    query["VehicleQueryService\nConsultas de ficha"]
+    lifecycle["VehicleLifecycleService\nOrquestación transaccional"]
+    resolver["VehicleStateResolver\nSelecciona comportamiento State"]
+    state["VehicleStateBehavior\nReglas según estado actual"]
+    specs["TransitionSpecificationSet\nPrecondiciones componibles"]
+    auth["AuthorizationService\nPermisos"]
+    reservation["ReservationService\nReserva activa"]
+    effects["PublicationEffectPort\nEfectos internos"]
+    audit["AuditPort\nAuditoría"]
+    outbox["OutboxPort\nEventos"]
+    vehicleRepo["VehicleRepository"]
+    reservationRepo["ReservationRepository"]
+    db[("PostgreSQL")]
+
+    controller --> lifecycle
+    controller --> query
+    lifecycle --> resolver
+    resolver --> state
+    lifecycle --> specs
+    lifecycle --> auth
+    lifecycle --> reservation
+    lifecycle --> effects
+    lifecycle --> audit
+    lifecycle --> outbox
+    lifecycle --> vehicleRepo
+    reservation --> reservationRepo
+    query --> vehicleRepo
+    vehicleRepo --> db
+    reservationRepo --> db
+    effects --> db
+    audit --> db
+    outbox --> db

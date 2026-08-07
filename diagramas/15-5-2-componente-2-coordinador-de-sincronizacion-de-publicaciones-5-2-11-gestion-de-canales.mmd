@@ -1,0 +1,15 @@
+stateDiagram-v2
+    [*] --> PENDIENTE
+    PENDIENTE --> ASIGNADA: asignar responsable
+    ASIGNADA --> EN_PROCESO: iniciar trabajo
+    EN_PROCESO --> ESPERANDO_VERIFICACION: adjuntar evidencia
+    ESPERANDO_VERIFICACION --> COMPLETADA: verificación independiente
+    ESPERANDO_VERIFICACION --> EN_PROCESO: evidencia insuficiente
+    PENDIENTE --> VENCIDA: supera SLA
+    ASIGNADA --> VENCIDA: supera SLA
+    EN_PROCESO --> VENCIDA: supera SLA
+    VENCIDA --> EN_PROCESO: reabrir y escalar
+    PENDIENTE --> CANCELADA: acción ya no aplica
+    ASIGNADA --> CANCELADA: acción ya no aplica
+    COMPLETADA --> [*]
+    CANCELADA --> [*]

@@ -1,0 +1,27 @@
+sequenceDiagram
+    autonumber
+    actor C as Cliente comprador
+    actor V as Vendedor
+    participant S as Sitio público
+    participant API as API central
+    participant A as AppointmentSchedulingService
+    participant DB as PostgreSQL
+    participant W as Procesador
+    participant GC as Google Calendar
+
+    C->>S: Solicitar visita
+    S->>API: POST /visit-requests
+    API->>A: createRequest(vehicle, lead, preference)
+    A->>DB: cita SOLICITADA
+    DB-->>API: requestId
+    API-->>S: 202 Accepted
+    V->>API: asignar vendedor y horario
+    API->>A: schedule(requestId, seller, slot)
+    A->>DB: validar vehículo y traslape
+    alt horario disponible y vehículo vigente
+        A->>DB: cita AGENDADA + Outbox
+        W->>GC: crear evento
+        GC-->>W: éxito o error
+    else conflicto o vehículo terminal
+        A-->>API: 409 APPOINTMENT_CONFLICT / VEHICLE_UNAVAILABLE
+    end

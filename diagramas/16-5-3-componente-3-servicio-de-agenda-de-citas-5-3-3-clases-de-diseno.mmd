@@ -1,0 +1,81 @@
+classDiagram
+    class AppointmentController {
+      +requestVisit(command, idempotencyKey)
+      +schedule(appointmentId, command, ifMatch)
+      +confirm(appointmentId, ifMatch)
+      +reschedule(appointmentId, command, ifMatch)
+      +cancel(appointmentId, reason, ifMatch)
+    }
+
+    class AppointmentSchedulingService {
+      +requestVisit(command) AppointmentResult
+      +schedule(command) AppointmentResult
+      +confirm(command) AppointmentResult
+      +reschedule(command) AppointmentResult
+      +cancel(command) AppointmentResult
+    }
+
+    class Appointment {
+      -UUID id
+      -UUID vehicleId
+      -UUID leadId
+      -UUID sellerId
+      -AppointmentStatus status
+      -Instant preferredAt
+      -Instant scheduledAt
+      -long version
+      +schedule(date, seller)
+      +confirm()
+      +reschedule(date)
+      +cancel(reason)
+    }
+
+    class SellerAssignmentPolicy {
+      +selectOrValidate(requestedSeller, vehicleId, date) UUID
+    }
+
+    class SellerAvailabilityPolicy {
+      +evaluate(sellerId, start, duration) AvailabilityResult
+    }
+
+    class VehicleAppointmentPolicy {
+      +assertRequestAllowed(vehicleState)
+      +assertScheduleAllowed(vehicleState)
+    }
+
+    class LeadService {
+      +findOrCreateMinimalLead(contact, vehicleId, origin)
+    }
+
+    class VehicleAvailabilityPort {
+      <<interface>>
+      +getState(vehicleId) VehicleState
+    }
+
+    class AppointmentRepository {
+      <<interface>>
+      +findById(id)
+      +findConflicts(sellerId, start, duration)
+      +saveScheduledIfNoOverlap(appointment, expectedVersion)
+    }
+
+    class AuditPort {
+      <<interface>>
+      +append(event)
+    }
+
+    class OutboxPort {
+      <<interface>>
+      +append(event)
+    }
+
+    AppointmentController --> AppointmentSchedulingService
+    AppointmentSchedulingService --> AppointmentRepository
+    AppointmentSchedulingService --> LeadService
+    AppointmentSchedulingService --> SellerAssignmentPolicy
+    AppointmentSchedulingService --> SellerAvailabilityPolicy
+    AppointmentSchedulingService --> VehicleAppointmentPolicy
+    AppointmentSchedulingService --> VehicleAvailabilityPort
+    AppointmentSchedulingService --> AuditPort
+    AppointmentSchedulingService --> OutboxPort
+    AppointmentRepository --> Appointment

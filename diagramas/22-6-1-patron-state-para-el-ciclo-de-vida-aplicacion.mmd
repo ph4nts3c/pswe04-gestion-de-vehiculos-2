@@ -1,0 +1,23 @@
+classDiagram
+    class VehicleStateResolver {
+      +resolve(state) VehicleStateBehavior
+    }
+
+    class VehicleStateBehavior {
+      <<interface>>
+      +evaluate(target, context) TransitionDecision
+      +availableTransitions(context)
+    }
+
+    class PublishedState
+    class ReservedState
+    class SoldState
+    class RetiredState
+    class VehicleLifecycleService
+
+    VehicleStateBehavior <|.. PublishedState
+    VehicleStateBehavior <|.. ReservedState
+    VehicleStateBehavior <|.. SoldState
+    VehicleStateBehavior <|.. RetiredState
+    VehicleLifecycleService --> VehicleStateResolver
+    VehicleStateResolver --> VehicleStateBehavior

@@ -1,0 +1,22 @@
+classDiagram
+    class PublicationChannel {
+      <<interface>>
+      +updatePrice(command)
+      +updateAvailability(command)
+      +closePublication(command)
+    }
+
+    class PublicationChannelResolver {
+      +resolve(channel) PublicationChannel
+    }
+
+    class CRAutosAdapter
+    class FacebookAdapter
+    class Encuentra24Adapter
+    class ManualPublicationAdapter
+
+    PublicationChannel <|.. CRAutosAdapter
+    PublicationChannel <|.. FacebookAdapter
+    PublicationChannel <|.. Encuentra24Adapter
+    PublicationChannel <|.. ManualPublicationAdapter
+    PublicationChannelResolver --> PublicationChannel
