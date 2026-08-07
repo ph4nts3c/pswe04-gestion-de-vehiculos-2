@@ -1401,3 +1401,2071 @@ Los accesos distinguen autorización concedida, transferencia completada y trans
 **Revisión requerida si:** cambia el proveedor de almacenamiento o una evaluación legal o de seguridad exige controles adicionales de cifrado, retención o residencia.
 
 **Archivo individual:** [`ADR-010-seguridad-documentos-drive.md`](../decisiones/ADR-010-seguridad-documentos-drive.md)
+
+---
+
+# BLOQUE 5 — DISEÑO DETALLADO
+*Hito: Entrega final (S14)*
+
+---
+
+## 10. Diseño detallado de componentes
+
+Se seleccionan tres componentes críticos: Gestor del ciclo de vida, Coordinador de sincronización de publicaciones y Servicio de agenda. Cada uno incluye trazabilidad, clases, contratos, robustez y secuencias principal y alternativa. El Gestor seguro de documentos se conserva como diseño complementario porque responde al escenario de seguridad QS-06.
+### 10.1. Componente 1: Gestor del ciclo de vida del vehículo
+
+#### 10.1.1. Responsabilidad y trazabilidad
+
+El componente controla cualquier transición que cambie la condición comercial del vehículo. El estado se persiste como enum por simplicidad de almacenamiento, pero su comportamiento se resuelve mediante objetos State; así el diseño y el patrón aplicado describen la misma solución.
+
+| Requerimiento | Evidencia en el componente |
+|---|---|
+| `REQ-INV-01` | `VehicleRepository` es el único puerto de escritura del agregado `Vehicle`. |
+| `REQ-LCV-01` | `VehicleStateBehavior`, `AuthorizationService` y `TransitionSpecificationSet`. |
+| `REQ-LCV-02` | `ReservationService` más índice único parcial de reserva activa. |
+| `REQ-LCV-03` | Los estados terminales no ofrecen transiciones de reserva y son consultados por agenda. |
+| `REQ-AUD-01` | `AuditPort` se ejecuta dentro de la misma transacción. |
+| `REQ-PUB-01` | `PublicationEffectPort` registra una acción por publicación afectada. |
+| `REQ-PUB-02` | `OutboxPort` separa el `COMMIT` interno de la actualización externa. |
+| `S07-Q2`, `S07-Q3` | La solicitud solo usa PostgreSQL; no espera proveedores. |
+
+#### 10.1.2. Invariantes y contrato funcional
+
+**Precondiciones comunes**
+
+1. El vehículo existe y la versión `If-Match` coincide.
+2. La clave idempotente pertenece al actor, vehículo y tipo de transición.
+3. El actor posee el permiso indicado por el State actual.
+4. Las especificaciones de la transición se cumplen.
+
+**Postcondiciones de una transición exitosa**
+
+1. El vehículo queda en el nuevo estado y aumenta su versión.
+2. Los cambios relacionados —reserva, venta o retiro— quedan en la misma transacción.
+3. Se registra auditoría con estado anterior, nuevo, actor, motivo y `correlationId`.
+4. Cada publicación afectada recibe una acción de sincronización.
+5. Se inserta un evento Outbox; no se llama a proveedores durante la solicitud HTTP.
+
+**Invariantes**
+
+- `VENDIDO` y `RETIRADO` no aceptan nuevas citas ni reservas.
+- Existe como máximo una reserva `ACTIVA` por vehículo.
+- Ninguna API externa decide o escribe `Vehicle.state`.
+- Una transición fallida no deja auditoría, reserva o Outbox parcialmente confirmados.
+
+#### 10.1.3. Clases de diseño
+
+```mermaid
+classDiagram
+    class VehicleLifecycleController {
+      +getAvailableTransitions(vehicleId, actor)
+      +transition(vehicleId, command, ifMatch, idempotencyKey)
+    }
+
+    class VehicleLifecycleService {
+      +availableTransitions(vehicleId, actor) TransitionView
+      +transition(command) TransitionResult
+    }
+
+    class Vehicle {
+      -UUID id
+      -VehicleState state
+      -Money askingPrice
+      -long version
+      +apply(decision)
+      +isTerminal() boolean
+    }
+
+    class VehicleStateResolver {
+      +resolve(state) VehicleStateBehavior
+    }
+
+    class VehicleStateBehavior {
+      <<interface>>
+      +evaluate(target, context) TransitionDecision
+      +availableTransitions(context) Set~TransitionOption~
+    }
+
+    class PublishedState
+    class ReservedState
+    class SoldState
+    class RetiredState
+
+    class TransitionSpecification {
+      <<interface>>
+      +evaluate(context) SpecificationResult
+    }
+
+    class ReservationService {
+      +createActive(vehicleId, buyerId, condition)
+      +cancelActive(vehicleId, reason)
+      +convertToSale(vehicleId)
+    }
+
+    class AuthorizationService {
+      +assertAllowed(actor, permission)
+    }
+
+    class VehicleRepository {
+      <<interface>>
+      +findById(id)
+      +saveIfVersion(vehicle, expectedVersion)
+    }
+
+    class ReservationRepository {
+      <<interface>>
+      +existsActiveByVehicle(vehicleId) boolean
+      +save(reservation)
+    }
+
+    class PublicationEffectPort {
+      <<interface>>
+      +markForStateChange(vehicleId, previous, current)
+    }
+
+    class AuditPort {
+      <<interface>>
+      +append(event)
+    }
+
+    class OutboxPort {
+      <<interface>>
+      +append(event)
+    }
+
+    VehicleLifecycleController --> VehicleLifecycleService
+    VehicleLifecycleService --> VehicleRepository
+    VehicleLifecycleService --> VehicleStateResolver
+    VehicleStateResolver --> VehicleStateBehavior
+    VehicleStateBehavior <|.. PublishedState
+    VehicleStateBehavior <|.. ReservedState
+    VehicleStateBehavior <|.. SoldState
+    VehicleStateBehavior <|.. RetiredState
+    VehicleLifecycleService --> TransitionSpecification
+    VehicleLifecycleService --> AuthorizationService
+    VehicleLifecycleService --> ReservationService
+    VehicleLifecycleService --> PublicationEffectPort
+    VehicleLifecycleService --> AuditPort
+    VehicleLifecycleService --> OutboxPort
+    ReservationService --> ReservationRepository
+    VehicleRepository --> Vehicle
+```
+
+Los estados de preparación (`INGRESADO`, `PENDIENTE_DOCUMENTACION`, `PENDIENTE_FOTOS` y `LISTO_PARA_PUBLICAR`) también implementan `VehicleStateBehavior`; el diagrama muestra los estados con mayor riesgo comercial para conservar legibilidad.
+
+#### 10.1.4. Secuencia principal: reservar un vehículo publicado
+
+```mermaid
+sequenceDiagram
+    actor V as Vendedor
+    participant UI as Backoffice
+    participant C as VehicleLifecycleController
+    participant S as VehicleLifecycleService
+    participant VR as VehicleRepository
+    participant SR as VehicleStateResolver
+    participant ST as PublishedState
+    participant A as AuthorizationService
+    participant R as ReservationService
+    participant PE as PublicationEffectPort
+    participant AU as AuditPort
+    participant O as OutboxPort
+
+    V->>UI: Reservar vehículo
+    UI->>C: POST /vehicles/{id}/transitions\nIf-Match + Idempotency-Key
+    C->>S: transition(command)
+    S->>VR: findById(id)
+    VR-->>S: Vehicle(PUBLICADO, version=12)
+    S->>SR: resolve(PUBLICADO)
+    SR-->>S: PublishedState
+    S->>ST: evaluate(RESERVADO, context)
+    ST-->>S: permiso + especificaciones + efectos
+    S->>A: assertAllowed(actor, RESERVE_VEHICLE)
+    A-->>S: autorizado
+    S->>R: createActive(vehicleId, buyerId, condition)
+    R-->>S: Reservation(ACTIVA)
+    S->>S: vehicle.apply(decision)
+    S->>PE: markForStateChange(PUBLICADO, RESERVADO)
+    S->>AU: append(auditoría)
+    S->>O: append(VehicleStateChanged)
+    S->>VR: saveIfVersion(vehicle, 12)
+    VR-->>S: guardado, version=13
+    S-->>C: TransitionResult
+    C-->>UI: 200 OK
+    UI-->>V: Vehículo reservado
+```
+
+#### 10.1.5. Secuencia alternativa: reserva concurrente
+
+```mermaid
+sequenceDiagram
+    actor V1 as Vendedor A
+    actor V2 as Vendedor B
+    participant S as VehicleLifecycleService
+    participant RR as ReservationRepository
+    participant VR as VehicleRepository
+    participant DB as PostgreSQL
+
+    par Solicitud A
+        V1->>S: reservar(If-Match=12)
+        S->>RR: save(ACTIVA)
+        RR->>DB: INSERT reserva activa
+        DB-->>RR: OK
+        S->>VR: saveIfVersion(vehicle, 12)
+        VR-->>S: version=13
+    and Solicitud B
+        V2->>S: reservar(If-Match=12)
+        S->>RR: save(ACTIVA)
+        RR->>DB: INSERT reserva activa
+        DB-->>RR: violación de unicidad o espera
+        S-->>V2: rollback
+    end
+
+    S-->>V1: 200 OK
+    S-->>V2: 409 VEHICLE_ALREADY_RESERVED\no 412 STALE_VEHICLE_VERSION
+```
+
+La respuesta depende del punto de conflicto, pero nunca quedan dos reservas activas ni una transición parcial.
+
+#### 10.1.6. Análisis de robustez
+
+```mermaid
+flowchart LR
+    boundary["«boundary»\nDetalle del vehículo /\nVehicleLifecycleController"]
+    control["«control»\nVehicleLifecycleService"]
+    resolver["«control»\nVehicleStateResolver"]
+    state["«control»\nVehicleStateBehavior"]
+    spec["«control»\nTransitionSpecification"]
+    reservation["«control»\nReservationService"]
+    vehicle["«entity»\nVehicle"]
+    reserveEntity["«entity»\nReservation"]
+    publication["«entity»\nPublicationSyncAction"]
+    audit["«entity»\nAuditEvent"]
+    outbox["«entity»\nOutboxEvent"]
+
+    boundary --> control
+    control --> resolver
+    resolver --> state
+    control --> spec
+    control --> reservation
+    control --> vehicle
+    reservation --> reserveEntity
+    control --> publication
+    control --> audit
+    control --> outbox
+```
+
+| Falla | Detección | Respuesta | Estado persistido |
+|---|---|---|---|
+| Actor sin permiso | `AuthorizationService` | `403` | Sin cambios. |
+| Transición inexistente | State actual | `409 INVALID_STATE_TRANSITION` | Sin cambios. |
+| Precondición incumplida | Specification | `409 PRECONDITION_NOT_MET` con detalle | Sin cambios. |
+| Versión obsoleta | `saveIfVersion` | `412` | Sin sobrescritura. |
+| Segunda reserva | Índice único parcial | `409` y rollback | Conserva la primera reserva. |
+| Error al insertar auditoría u Outbox | Transacción local | `500` y rollback | No queda transición parcial. |
+
+#### 10.1.7. Contratos REST
+
+##### Consultar transiciones disponibles
+
+```http
+GET /api/vehicles/{vehicleId}/available-transitions
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "currentState": "PUBLICADO",
+  "version": 12,
+  "availableTransitions": [
+    {
+      "targetState": "RESERVADO",
+      "requiredFields": ["buyerId", "reservationCondition"]
+    },
+    {
+      "targetState": "RETIRADO",
+      "requiredFields": ["reason"]
+    }
+  ]
+}
+```
+
+##### Ejecutar transición
+
+```http
+POST /api/vehicles/{vehicleId}/transitions
+Authorization: Bearer <token>
+If-Match: "12"
+Idempotency-Key: 52e18c34-1a21-4633-9728-b8d196071fac
+Content-Type: application/json
+```
+
+```json
+{
+  "targetState": "RESERVADO",
+  "reason": "Cliente confirma reserva",
+  "context": {
+    "buyerId": "d4d2c237-1295-4ad7-96f2-1dc8ffebcc38",
+    "reservationCondition": "Depósito confirmado"
+  }
+}
+```
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "previousState": "PUBLICADO",
+  "currentState": "RESERVADO",
+  "version": 13,
+  "reservationStatus": "ACTIVA",
+  "publicationEffects": 3,
+  "externalSyncStatus": "PENDING"
+}
+```
+
+##### Errores funcionales
+
+| HTTP | Código | Condición |
+|---|---|---|
+| `400` | `INVALID_REQUEST` | Datos o encabezados requeridos ausentes. |
+| `403` | `TRANSITION_NOT_AUTHORIZED` | El actor no tiene permiso. |
+| `404` | `VEHICLE_NOT_FOUND` | El vehículo no existe o no es visible. |
+| `409` | `INVALID_STATE_TRANSITION` | El State actual no ofrece el destino. |
+| `409` | `VEHICLE_ALREADY_RESERVED` | Ya hay una reserva activa. |
+| `409` | `PRECONDITION_NOT_MET` | Falta un dato o requisito. |
+| `412` | `STALE_VEHICLE_VERSION` | La versión cambió. |
+| `422` | `BUSINESS_RULE_VIOLATION` | La forma es válida, pero viola una regla. |
+
+#### 10.1.8. Contratos internos
+
+```java
+public interface VehicleStateBehavior {
+    TransitionDecision evaluate(
+        VehicleState target,
+        TransitionContext context
+    );
+}
+
+public interface PublicationEffectPort {
+    int markForVehicleStateChange(
+        UUID vehicleId,
+        VehicleState previousState,
+        VehicleState newState
+    );
+}
+
+public interface OutboxPort {
+    void append(DomainEvent event);
+}
+```
+
+### 10.2. Componente 2: Coordinador de sincronización de publicaciones
+
+#### 10.2.1. Responsabilidad y trazabilidad
+
+El componente procesa efectos externos sin bloquear la operación principal. Un evento puede afectar varias publicaciones; por eso se registra una `PublicationSyncAction` independiente para cada canal.
+
+| Requerimiento | Evidencia en el componente |
+|---|---|
+| `REQ-PUB-01` | Expande eventos de precio, reserva, venta y retiro en acciones por publicación. |
+| `REQ-PUB-02` | Un error cambia el estado operativo de la acción, no el estado del vehículo. |
+| `REQ-PUB-03` | `ManualPublicationAdapter` crea tareas idempotentes. |
+| `REQ-INT-01` | `ProcessedActionStore`, `RetryPolicy` y clave `eventId + publicationId`. |
+| `S07-Q2` | La acción se crea en la transacción interna y el worker la toma antes de un minuto. |
+| `S07-Q4` | Último error, intentos y próxima ejecución quedan visibles por canal. |
+
+#### 10.2.2. Invariantes y estados operativos
+
+Se distinguen tres conceptos que antes aparecían mezclados:
+
+```text
+Evento Outbox:
+PENDING -> PROCESSING -> PROCESSED
+                    -> RETRY_SCHEDULED
+                    -> WAITING_MANUAL
+                    -> DEAD_LETTER
+                    -> CANCELLED
+
+Acción de integración:
+PENDIENTE -> EN_PROCESO -> EXITOSA
+                       -> EN_REINTENTO -> EN_PROCESO
+                       -> TAREA_MANUAL_ABIERTA -> EXITOSA / CANCELADA
+                       -> DEAD_LETTER
+                       -> CANCELADA
+
+Publicación externa:
+PENDIENTE -> ACTUALIZADA / MANUAL_PENDIENTE / FALLIDA / CERRADA
+```
+
+1. El consumidor no cambia `Vehicle.state`.
+2. Una acción `EXITOSA` para `eventId + targetId` no se ejecuta de nuevo.
+3. Un fallo temporal usa `EN_REINTENTO`; un error no recuperable o el agotamiento de intentos usa `DEAD_LETTER`.
+4. Crear una tarea manual no completa la obligación: la acción queda `TAREA_MANUAL_ABIERTA` y el evento `WAITING_MANUAL`.
+5. La verificación de la tarea cambia la acción a `EXITOSA` y actualiza la publicación a `ACTUALIZADA` o `CERRADA`, según la intención.
+6. El evento queda `PROCESSED` solo cuando todas sus acciones están en `EXITOSA` o `CANCELADA`.
+7. Si al menos una acción está en `DEAD_LETTER`, el evento refleja `DEAD_LETTER`; los éxitos de otros canales se conservan.
+8. Un replay opera sobre acciones concretas y no repite las que ya terminaron correctamente.
+
+#### 10.2.3. Clases de diseño
+
+```mermaid
+classDiagram
+    class OutboxEventReader {
+      +claimBatch(limit) List~OutboxEvent~
+    }
+
+    class PublicationSyncCoordinator {
+      +process(event)
+      -ensureActions(event)
+      -processAction(action)
+      -recalculateEventStatus(eventId)
+    }
+
+    class PublicationSyncAction {
+      -UUID eventId
+      -UUID publicationId
+      -SyncActionStatus status
+      -int attempts
+      -Instant nextAttemptAt
+      +markSuccess(providerReference)
+      +markRetry(error, nextAttempt)
+      +moveToDeadLetter(error)
+      +markManualPending(taskId)
+      +markManualCompleted(evidenceId)
+    }
+
+    class PublicationChannelResolver {
+      +resolve(channel) PublicationChannel
+    }
+
+    class PublicationChannel {
+      <<interface>>
+      +execute(command) ChannelResult
+    }
+
+    class RetryPolicy {
+      +decision(attempts, errorType) RetryDecision
+    }
+
+    class ProcessedActionStore {
+      +wasProcessed(eventId, targetId) boolean
+      +markProcessed(eventId, targetId)
+    }
+
+    class IntegrationActionRepository {
+      <<interface>>
+      +findDue(limit)
+      +save(action)
+      +calculateAggregateStatus(eventId) OutboxStatus
+    }
+
+    class ExternalPublicationRepository {
+      <<interface>>
+      +findAffected(event)
+      +save(publication)
+    }
+
+    class OutboxRepository {
+      <<interface>>
+      +findById(eventId)
+      +updateStatus(eventId, status)
+    }
+
+    class ManualTaskRepository {
+      <<interface>>
+      +createIfAbsent(taskKey, details)
+    }
+
+    class CRAutosAdapter
+    class FacebookMarketplaceAdapter
+    class Encuentra24Adapter
+    class ManualPublicationAdapter
+
+    OutboxEventReader --> PublicationSyncCoordinator
+    PublicationSyncCoordinator --> IntegrationActionRepository
+    PublicationSyncCoordinator --> PublicationChannelResolver
+    PublicationSyncCoordinator --> RetryPolicy
+    PublicationSyncCoordinator --> ProcessedActionStore
+    PublicationSyncCoordinator --> ExternalPublicationRepository
+    PublicationSyncCoordinator --> OutboxRepository
+    PublicationChannelResolver --> PublicationChannel
+    PublicationChannel <|.. CRAutosAdapter
+    PublicationChannel <|.. FacebookMarketplaceAdapter
+    PublicationChannel <|.. Encuentra24Adapter
+    PublicationChannel <|.. ManualPublicationAdapter
+    ManualPublicationAdapter --> ManualTaskRepository
+    IntegrationActionRepository --> PublicationSyncAction
+```
+
+#### 10.2.4. Secuencia principal: cambio de precio con un canal automático y uno manual
+
+```mermaid
+sequenceDiagram
+    participant R as OutboxEventReader
+    participant C as PublicationSyncCoordinator
+    participant AR as IntegrationActionRepository
+    participant RES as PublicationChannelResolver
+    participant CA as CRAutosAdapter
+    participant MA as ManualPublicationAdapter
+    participant X as CRAutos API
+    participant T as ManualTaskRepository
+    participant V as Verificador
+    participant O as OutboxRepository
+
+    R->>C: process(VehiclePriceChanged)
+    C->>AR: ensureAction(CRAutos)
+    C->>AR: ensureAction(Facebook manual)
+
+    C->>RES: resolve(CRAUTOS)
+    RES-->>C: CRAutosAdapter
+    C->>CA: execute(UpdatePrice)
+    CA->>X: HTTPS PUT + idempotency key
+    X-->>CA: 200 OK
+    CA-->>C: Success
+    C->>AR: CRAutos = EXITOSA
+
+    C->>RES: resolve(FACEBOOK_MANUAL)
+    RES-->>C: ManualPublicationAdapter
+    C->>MA: execute(UpdatePrice)
+    MA->>T: createIfAbsent(actionId + channel)
+    T-->>MA: taskId
+    MA-->>C: ManualTaskRequired(taskId)
+    C->>AR: Facebook = TAREA_MANUAL_ABIERTA
+    C->>O: event = WAITING_MANUAL
+
+    V->>T: verificar evidencia y valor visible
+    T->>AR: markManualCompleted(actionId)
+    AR-->>C: todas las acciones terminales correctas
+    C->>O: event = PROCESSED
+```
+
+El evento no se marca procesado al crear la tarea. La obligación termina cuando la acción manual fue ejecutada y verificada, o cuando se cancela porque dejó de ser compatible con el estado actual.
+
+#### 10.2.5. Secuencia alternativa: proveedor temporalmente fuera de servicio
+
+```mermaid
+sequenceDiagram
+    participant C as PublicationSyncCoordinator
+    participant A as Encuentra24Adapter
+    participant X as Proveedor externo
+    participant RP as RetryPolicy
+    participant AR as IntegrationActionRepository
+    participant O as OutboxRepository
+
+    C->>A: execute(UpdateAvailability)
+    A->>X: HTTPS request
+    X--xA: timeout / 503
+    A-->>C: RetryableFailure
+    C->>RP: decision(attempts=2, TEMPORARY)
+    RP-->>C: retryAt + continuar
+    C->>AR: save(EN_REINTENTO, error, retryAt)
+    C->>O: markRetryScheduled(eventId)
+```
+
+Cuando `RetryPolicy` determina que no quedan intentos, la acción pasa a `DEAD_LETTER`, se genera una alerta y el evento refleja el mismo estado agregado. Los éxitos ya obtenidos en otros canales no se revierten.
+
+#### 10.2.6. Análisis de robustez
+
+```mermaid
+flowchart LR
+    scheduler["«boundary»\nScheduler / OutboxEventReader"]
+    coordinator["«control»\nPublicationSyncCoordinator"]
+    resolver["«control»\nPublicationChannelResolver"]
+    retry["«control»\nRetryPolicy"]
+    adapter["«boundary»\nPublicationChannel adapter"]
+    publication["«entity»\nExternalPublication"]
+    action["«entity»\nPublicationSyncAction"]
+    outbox["«entity»\nOutboxEvent"]
+    task["«entity»\nManualTask"]
+    provider["Sistema externo"]
+
+    scheduler --> coordinator
+    coordinator --> resolver
+    coordinator --> retry
+    resolver --> adapter
+    adapter --> provider
+    coordinator --> publication
+    coordinator --> action
+    coordinator --> outbox
+    coordinator --> task
+```
+
+| Falla | Clasificación | Respuesta | Resultado visible |
+|---|---|---|---|
+| Timeout, `429` o `503` | Temporal | Reintento con espera creciente | `EN_REINTENTO`, error y próxima fecha. |
+| Credencial vencida | Temporal operativa | Reintento limitado + alerta técnica | `EN_REINTENTO`; luego `DEAD_LETTER` si no se corrige. |
+| Publicación inexistente en proveedor | Permanente | No reintentar automáticamente | Acción `DEAD_LETTER`, publicación `FALLIDA` y tarea de revisión. |
+| Canal sin API | Manual | Crear tarea idempotente | Acción `TAREA_MANUAL_ABIERTA`, publicación `MANUAL_PENDIENTE` y evento `WAITING_MANUAL`. |
+| Worker cae después del éxito externo | Resultado incierto | Repetir con clave idempotente o reconciliar | No se duplica cuando el proveedor soporta clave; de lo contrario se consulta/reconcilia. |
+
+#### 10.2.7. Contrato del evento y de la acción
+
+```json
+{
+  "eventId": "af33afe4-189b-4801-90cf-3f457ffedb15",
+  "eventType": "VehiclePriceChanged",
+  "aggregateId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "occurredAt": "2026-08-06T19:30:00-06:00",
+  "payload": {
+    "previousPrice": 12500000,
+    "newPrice": 11900000,
+    "currency": "CRC",
+    "changedBy": "user-123"
+  }
+}
+```
+
+Una acción derivada usa esta clave lógica:
+
+```text
+syncActionKey = eventId + ":" + publicationId
+```
+
+Reglas:
+
+- el evento y las acciones iniciales se insertan con el cambio interno;
+- el coordinador puede completar o ampliar las acciones idempotentemente;
+- cada acción se reintenta de forma independiente;
+- el adaptador no recibe acceso al repositorio de vehículos;
+- una tarea manual abierta mantiene el evento en `WAITING_MANUAL`;
+- el evento se marca `PROCESSED` solo cuando todas sus acciones están `EXITOSA` o `CANCELADA`;
+- una acción en `DEAD_LETTER` hace visible el fallo agregado sin revertir acciones exitosas.
+
+#### 10.2.8. Contrato interno del adaptador
+
+```java
+public interface PublicationChannel {
+    ChannelCapabilities capabilities();
+    ChannelResult execute(PublicationCommand command);
+}
+
+public sealed interface ChannelResult {
+    record Success(String externalReference) implements ChannelResult {}
+    record ManualTaskRequired(String reason) implements ChannelResult {}
+    record RetryableFailure(String code, String message) implements ChannelResult {}
+    record PermanentFailure(String code, String message) implements ChannelResult {}
+}
+```
+
+#### 10.2.9. Contrato de consulta operativa
+
+```http
+GET /api/publications?vehicleId={vehicleId}
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "publications": [
+    {
+      "channel": "CRAUTOS",
+      "publicationStatus": "ACTUALIZADA",
+      "actionStatus": "EXITOSA",
+      "lastSuccessfulSyncAt": "2026-08-06T19:31:15-06:00"
+    },
+    {
+      "channel": "ENCUENTRA24",
+      "publicationStatus": "PENDIENTE",
+      "actionStatus": "EN_REINTENTO",
+      "attempts": 2,
+      "lastError": "Proveedor no disponible",
+      "nextAttemptAt": "2026-08-06T19:36:00-06:00"
+    }
+  ]
+}
+```
+
+
+#### 10.2.10. Observabilidad y operación del Outbox
+
+El Outbox debe responder cinco preguntas operativas: qué trabajo está pendiente, desde cuándo, por qué falló, quién lo atiende y cómo se recupera sin duplicar el efecto. La política se aplica a publicaciones, Calendar, notificaciones y reconciliaciones; este componente la detalla para publicaciones.
+
+##### Estados y regla de agregación
+
+| Nivel | Estados | Regla |
+|---|---|---|
+| Evento Outbox | `PENDING`, `PROCESSING`, `RETRY_SCHEDULED`, `WAITING_MANUAL`, `PROCESSED`, `DEAD_LETTER`, `CANCELLED` | Resume la situación de todas las acciones derivadas. |
+| Acción de integración | `PENDIENTE`, `EN_PROCESO`, `EN_REINTENTO`, `TAREA_MANUAL_ABIERTA`, `EXITOSA`, `DEAD_LETTER`, `CANCELADA` | Representa un destino concreto: publicación, cita, notificación o documento. |
+| Publicación externa | `PENDIENTE`, `ACTUALIZADA`, `MANUAL_PENDIENTE`, `FALLIDA`, `CERRADA` | Informa la consistencia visible por canal. |
+
+Prioridad para calcular el estado agregado:
+
+1. `DEAD_LETTER` si existe una acción no resuelta en dead-letter;
+2. `WAITING_MANUAL` si existe una tarea manual abierta y no hay dead-letter;
+3. `RETRY_SCHEDULED` si existe una acción en reintento;
+4. `PROCESSING` si existe una acción en proceso;
+5. `PROCESSED` si todas las acciones están `EXITOSA` o `CANCELADA`.
+
+Esta regla evita dos errores: declarar éxito cuando todavía hay una tarea manual abierta y convertir todo el evento en fallo sin conservar los canales que ya terminaron correctamente.
+
+##### Política de reintentos
+
+| Clasificación | Ejemplos | Tratamiento |
+|---|---|---|
+| Temporal | timeout, `429`, `502`, `503`, conexión interrumpida | Reintentos con espera creciente: 1, 5, 15 y 60 minutos. |
+| Credenciales/configuración | `401`, `403`, token revocado | Acción a `DEAD_LETTER`, alerta técnica y replay después de corregir la causa. |
+| Solicitud inválida | `400`, campo rechazado, publicación inexistente | Acción a `DEAD_LETTER`; respuesta sanitizada y tarea de revisión. |
+| Duplicado confirmado | El proveedor indica que la acción ya fue aplicada | Se trata como `EXITOSA` y se registra la referencia externa. |
+| Canal manual | No existe API confiable o la capacidad requerida no está disponible | Acción `TAREA_MANUAL_ABIERTA`; evento `WAITING_MANUAL`. |
+
+El intento inicial es inmediato y los intentos de 1, 5 y 15 minutos mantienen el compromiso de intentar la sincronización dentro de los 20 minutos definidos en S07. El intento de 60 minutos es una recuperación adicional; si falla, la acción pasa a dead-letter.
+
+##### Datos operativos mínimos
+
+```text
+outbox_event:
+  event_id, event_type, aggregate_id, correlation_id,
+  status, created_at, next_attempt_at,
+  locked_by, locked_until, dead_lettered_at,
+  completed_at, recovered_at
+
+integration_action:
+  action_id, event_id, target_type, target_id,
+  channel, action_type, idempotency_key, status,
+  attempts, next_attempt_at, last_http_status,
+  last_error_class, last_error_code, last_error_summary,
+  provider_reference, manual_task_id, updated_at
+```
+
+`target_type` permite usar la misma operación para `PUBLICATION`, `APPOINTMENT`, `NOTIFICATION` o `DOCUMENT_RECONCILIATION`. No se guardan tokens, encabezados de autorización, documentos ni respuestas completas con datos personales. El resumen de error se sanitiza antes de persistirse.
+
+##### Métricas y alertas
+
+| Métrica | Propósito | Umbral inicial |
+|---|---|---|
+| `outbox_events_total{status}` | Volumen por estado agregado. | Alerta si `DEAD_LETTER > 0`. |
+| `outbox_oldest_action_age_seconds{status,channel}` | Edad de la acción más antigua. | Aviso a 5 min; crítico a 20 min para acciones automáticas. |
+| `integration_action_success_ratio{channel}` | Acciones automáticas exitosas / terminadas. | Objetivo mensual ≥ 95%, analizado por canal. |
+| `integration_action_duration_seconds_p95{channel}` | Tiempo hasta `EXITOSA`, `CANCELADA` o `DEAD_LETTER`. | p95 ≤ 20 min cuando el proveedor está disponible. |
+| `manual_task_overdue_total{channel,priority}` | Tareas manuales vencidas. | Alerta cuando sea mayor que cero. |
+| `worker_last_success_timestamp` | Detecta worker detenido. | Crítico si hay acciones elegibles y no procesa durante 10 min. |
+| `replay_total{result}` | Controla recuperaciones y repetición de fallos. | Revisión si un mismo error reaparece después del replay. |
+
+El tablero muestra por canal: acciones pendientes, edad máxima, reintentos, dead-letter, tareas manuales vencidas y últimas recuperaciones. Cada registro enlaza con `correlationId`, vehículo y destino, sin exponer datos sensibles.
+
+##### Responsables y escalamiento
+
+| Situación | Responsable primario | Escalamiento |
+|---|---|---|
+| Error temporal dentro del periodo de reintento | Procesador automático; supervisa administrador técnico. | Administrador técnico si supera 20 minutos. |
+| Credenciales, cuota o configuración | Administrador técnico. | Dueño del negocio si afecta varios canales o supera 60 minutos. |
+| Error de contenido o publicación inexistente | Encargado de publicaciones. | Dueño del negocio para vehículos reservados, vendidos o retirados. |
+| Tarea manual | Encargado de publicaciones asignado. | Dueño del negocio al vencer el SLA. |
+| Calendar o notificación en dead-letter | Administrador técnico y responsable de agenda. | Dueño del negocio si afecta citas del mismo día. |
+| Posible exposición de documento | Administrador técnico y encargado de documentos. | Dueño del negocio de inmediato. |
+
+##### Dead-letter y recuperación por acción
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as OutboxEventReader
+    participant C as IntegrationCoordinator
+    participant A as IntegrationAdapter
+    participant R as IntegrationActionRepository
+    participant O as Operador autorizado
+    participant U as AuditPort
+
+    W->>C: procesar(eventId, actionId)
+    C->>A: execute(action)
+    A-->>C: error no recuperable / intentos agotados
+    C->>R: action = DEAD_LETTER
+    C->>U: append(ACTION_DEAD_LETTERED, correlationId)
+    R-->>O: alerta y detalle sanitizado
+    O->>O: corrige credencial, dato o configuración
+    O->>R: solicitar replay(actionId, motivo)
+    R->>U: append(REPLAY_REQUESTED, actor, motivo)
+    R->>W: crear nueva ejecución relacionada
+    W->>C: reprocesar solo la acción fallida
+    C->>A: execute(action)
+    A-->>C: éxito o duplicado ya aplicado
+    C->>R: action = EXITOSA
+    C->>U: append(ACTION_RECOVERED, actor, referencia)
+```
+
+La recuperación usa una operación explícita:
+
+```http
+POST /api/operations/outbox/{eventId}/replay
+Authorization: Bearer <token con OUTBOX_RECOVER>
+Idempotency-Key: <uuid>
+Content-Type: application/json
+```
+
+```json
+{
+  "actionIds": ["uuid-de-accion"],
+  "reason": "Credencial del canal renovada y verificada"
+}
+```
+
+Reglas:
+
+1. el replay requiere al menos una acción `DEAD_LETTER`;
+2. el payload original no se edita; se crea una ejecución relacionada con la acción original;
+3. la clave funcional se conserva para detectar duplicados;
+4. actor, motivo, fecha, evento, acción y resultado quedan auditados;
+5. antes de repetir una operación de resultado incierto se consulta o reconcilia el estado externo;
+6. una acción incompatible con el estado actual del vehículo se cambia a `CANCELADA`;
+7. el estado agregado del evento se recalcula después de cada recuperación.
+
+##### Runbook resumido
+
+1. localizar la acción por alerta, `correlationId`, vehículo o destino;
+2. revisar error, intentos, edad y estado interno actual;
+3. comprobar si el proveedor aplicó la operación aunque no respondiera;
+4. corregir credencial, capacidad, datos o configuración;
+5. decidir entre replay, tarea manual o cancelación;
+6. ejecutar la recuperación con motivo;
+7. comprobar el resultado externo y el estado agregado del evento;
+8. cerrar el incidente y registrar una acción preventiva si el error puede repetirse.
+
+#### 10.2.11. Gestión de canales manuales
+
+Un canal manual no se trata como una nota informal. Se modela como una operación controlada que conserva la misma intención que un adaptador automático, pero requiere intervención humana.
+
+##### Ciclo de vida de la tarea
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDIENTE
+    PENDIENTE --> ASIGNADA: asignar responsable
+    ASIGNADA --> EN_PROCESO: iniciar trabajo
+    EN_PROCESO --> ESPERANDO_VERIFICACION: adjuntar evidencia
+    ESPERANDO_VERIFICACION --> COMPLETADA: verificación independiente
+    ESPERANDO_VERIFICACION --> EN_PROCESO: evidencia insuficiente
+    PENDIENTE --> VENCIDA: supera SLA
+    ASIGNADA --> VENCIDA: supera SLA
+    EN_PROCESO --> VENCIDA: supera SLA
+    VENCIDA --> EN_PROCESO: reabrir y escalar
+    PENDIENTE --> CANCELADA: acción ya no aplica
+    ASIGNADA --> CANCELADA: acción ya no aplica
+    COMPLETADA --> [*]
+    CANCELADA --> [*]
+```
+
+##### Datos obligatorios
+
+| Campo | Uso |
+|---|---|
+| `taskId`, `actionId`, `correlationId` | Trazabilidad e idempotencia. |
+| Vehículo, publicación y canal | Contexto exacto de la tarea. |
+| Tipo de acción | Crear, cambiar precio, marcar reservado, retirar o cerrar. |
+| Valor esperado | Precio o disponibilidad que debe quedar visible. |
+| URL externa conocida | Acceso a la publicación que debe modificarse. |
+| Instrucciones | Pasos específicos del canal sin incluir credenciales. |
+| Responsable y rol | Persona que ejecuta la acción. |
+| `dueAt` y prioridad | Control del SLA. |
+| Evidencia | URL final, captura, referencia externa o nota justificada. |
+| Verificador | Persona distinta cuando la acción afecta vendido, retirado o precio. |
+| Resultado y motivo | Cierre, cancelación o imposibilidad. |
+
+##### SLA interno inicial
+
+| Acción | SLA de ejecución manual | Prioridad |
+|---|---:|---|
+| Vehículo reservado | 15 minutos | Alta |
+| Vehículo vendido o retirado | 15 minutos | Crítica |
+| Cambio de precio | 30 minutos | Alta |
+| Nueva publicación | 4 horas hábiles | Normal |
+| Corrección de descripción o fotos | 8 horas hábiles | Normal |
+
+Estos tiempos no prometen que el marketplace publique o modere contenido dentro del mismo plazo. Miden el tiempo bajo control del negocio: tomar la tarea, ejecutar la acción disponible y registrar evidencia.
+
+##### Reglas de control
+
+- La clave `actionId + channel` impide crear dos tareas activas para la misma intención.
+- Mientras la tarea esté abierta, la acción permanece `TAREA_MANUAL_ABIERTA` y el evento `WAITING_MANUAL`.
+- Una tarea no se marca `COMPLETADA` sin evidencia y verificación cuando afecta disponibilidad o precio.
+- Al verificar la tarea, el sistema cambia la acción a `EXITOSA`, actualiza la publicación y recalcula el evento.
+- Si el canal no permite confirmar el resultado, se registra `NO_VERIFICABLE` con motivo y se mantiene visible en el tablero.
+- Un cambio posterior invalida tareas anteriores incompatibles. Por ejemplo, una tarea para marcar reservado se cancela si el vehículo pasa a vendido y se crea una de retiro.
+- Las tareas vencidas generan notificación y escalamiento; no desaparecen del tablero.
+- Una reconciliación diaria revisa publicaciones activas y tareas abiertas contra el estado oficial.
+- El sistema conserva historial; una tarea no se borra para ocultar un incumplimiento.
+
+##### Contratos operativos
+
+```http
+GET /api/operations/manual-publications?status=VENCIDA&channel=FACEBOOK
+POST /api/operations/manual-publications/{taskId}/assign
+POST /api/operations/manual-publications/{taskId}/start
+POST /api/operations/manual-publications/{taskId}/submit-evidence
+POST /api/operations/manual-publications/{taskId}/verify
+POST /api/operations/manual-publications/{taskId}/cancel
+```
+
+Ejemplo de evidencia:
+
+```json
+{
+  "externalUrl": "https://canal.example/publicacion/123",
+  "observedPrice": 9850000,
+  "observedAvailability": "RESERVADO",
+  "evidenceReference": "drive://evidencias/publicacion-123-captura",
+  "notes": "Cambio visible y revisado en sesión sin autenticación"
+}
+```
+
+El repositorio de evidencias usa una ubicación separada de los documentos personales del vehículo y aplica retención limitada. Las capturas no deben incluir conversaciones, identificaciones ni datos del comprador.
+
+### 10.3. Componente 3: Servicio de agenda de citas
+
+#### 10.3.1. Responsabilidad y trazabilidad
+
+El componente administra la solicitud y la cita comercial. El sitio público registra una preferencia; solo un usuario interno puede asignar responsable y horario definitivo. Google Calendar conserva una copia de apoyo.
+
+| Requerimiento | Evidencia en el componente |
+|---|---|
+| `REQ-LEAD-01` | La solicitud reutiliza o crea un lead mínimo mediante `LeadService`. |
+| `REQ-APT-01` | `Appointment` se guarda antes del evento Outbox de Calendar. |
+| `REQ-APT-02` | `VehicleAppointmentPolicy` consulta el estado oficial. |
+| `REQ-LCV-03` | Vendido o retirado devuelve conflicto y no crea ni agenda la cita. |
+| `REQ-AUD-01` | Solicitar, agendar, confirmar, reprogramar y cancelar genera auditoría. |
+| `S07-Q3` | El bloqueo es local y no espera a Calendar. |
+| `S07-Q5` | La solicitud pública usa cuatro campos obligatorios. |
+
+#### 10.3.2. Invariantes y ciclo de cita
+
+```text
+SOLICITADA -> AGENDADA -> CONFIRMADA -> REALIZADA
+SOLICITADA / AGENDADA / CONFIRMADA -> CANCELADA
+AGENDADA / CONFIRMADA -> NO_ASISTIO
+```
+
+1. Toda cita pertenece a un vehículo y a un lead.
+2. `SOLICITADA` puede existir sin vendedor; `AGENDADA` requiere vendedor y fecha definitiva.
+3. La cita interna existe aunque Google Calendar esté caído.
+4. No se crean ni agendan citas para `VENDIDO` o `RETIRADO`.
+5. Reprogramar conserva la fecha anterior en auditoría.
+6. La clave idempotente impide solicitudes públicas duplicadas.
+7. Un conflicto de horario no sobrescribe otra cita.
+8. PostgreSQL impide traslapes de intervalos para un mismo vendedor en estados `AGENDADA` o `CONFIRMADA`; la consulta previa solo mejora la respuesta al usuario.
+
+#### 10.3.3. Clases de diseño
+
+```mermaid
+classDiagram
+    class AppointmentController {
+      +requestVisit(command, idempotencyKey)
+      +schedule(appointmentId, command, ifMatch)
+      +confirm(appointmentId, ifMatch)
+      +reschedule(appointmentId, command, ifMatch)
+      +cancel(appointmentId, reason, ifMatch)
+    }
+
+    class AppointmentSchedulingService {
+      +requestVisit(command) AppointmentResult
+      +schedule(command) AppointmentResult
+      +confirm(command) AppointmentResult
+      +reschedule(command) AppointmentResult
+      +cancel(command) AppointmentResult
+    }
+
+    class Appointment {
+      -UUID id
+      -UUID vehicleId
+      -UUID leadId
+      -UUID sellerId
+      -AppointmentStatus status
+      -Instant preferredAt
+      -Instant scheduledAt
+      -long version
+      +schedule(date, seller)
+      +confirm()
+      +reschedule(date)
+      +cancel(reason)
+    }
+
+    class SellerAssignmentPolicy {
+      +selectOrValidate(requestedSeller, vehicleId, date) UUID
+    }
+
+    class SellerAvailabilityPolicy {
+      +evaluate(sellerId, start, duration) AvailabilityResult
+    }
+
+    class VehicleAppointmentPolicy {
+      +assertRequestAllowed(vehicleState)
+      +assertScheduleAllowed(vehicleState)
+    }
+
+    class LeadService {
+      +findOrCreateMinimalLead(contact, vehicleId, origin)
+    }
+
+    class VehicleAvailabilityPort {
+      <<interface>>
+      +getState(vehicleId) VehicleState
+    }
+
+    class AppointmentRepository {
+      <<interface>>
+      +findById(id)
+      +findConflicts(sellerId, start, duration)
+      +saveScheduledIfNoOverlap(appointment, expectedVersion)
+    }
+
+    class AuditPort {
+      <<interface>>
+      +append(event)
+    }
+
+    class OutboxPort {
+      <<interface>>
+      +append(event)
+    }
+
+    AppointmentController --> AppointmentSchedulingService
+    AppointmentSchedulingService --> AppointmentRepository
+    AppointmentSchedulingService --> LeadService
+    AppointmentSchedulingService --> SellerAssignmentPolicy
+    AppointmentSchedulingService --> SellerAvailabilityPolicy
+    AppointmentSchedulingService --> VehicleAppointmentPolicy
+    AppointmentSchedulingService --> VehicleAvailabilityPort
+    AppointmentSchedulingService --> AuditPort
+    AppointmentSchedulingService --> OutboxPort
+    AppointmentRepository --> Appointment
+```
+
+#### 10.3.4. Secuencia principal: solicitar y agendar una visita
+
+```mermaid
+sequenceDiagram
+    actor B as Comprador
+    actor V as Vendedor
+    participant W as Sitio público
+    participant BO as Backoffice
+    participant C as AppointmentController
+    participant S as AppointmentSchedulingService
+    participant L as LeadService
+    participant VP as VehicleAvailabilityPort
+    participant AP as SellerAssignmentPolicy
+    participant SP as SellerAvailabilityPolicy
+    participant R as AppointmentRepository
+    participant A as AuditPort
+    participant O as OutboxPort
+
+    B->>W: Solicita visita y propone horario
+    W->>C: POST /public/visit-requests
+    C->>S: requestVisit(command)
+    S->>VP: getState(vehicleId)
+    VP-->>S: PUBLICADO
+    S->>L: findOrCreateMinimalLead(contact, vehicleId, SITIO_WEB)
+    L-->>S: Lead
+    S->>R: save(Appointment SOLICITADA)
+    S->>A: append(VISIT_REQUESTED)
+    S-->>C: 201 SOLICITADA
+    C-->>W: solicitud registrada
+
+    V->>BO: Asigna responsable y horario
+    BO->>C: POST /appointments/{id}/schedule\nIf-Match
+    C->>S: schedule(command)
+    S->>VP: getState(vehicleId)
+    VP-->>S: PUBLICADO
+    S->>AP: selectOrValidate(seller, vehicle, date)
+    AP-->>S: sellerId
+    S->>SP: evaluate(sellerId, date, duration)
+    SP-->>S: disponible
+    S->>R: saveScheduledIfNoOverlap(Appointment AGENDADA)
+    S->>A: append(APPOINTMENT_SCHEDULED)
+    S->>O: append(AppointmentScheduled)
+    S-->>C: 200 AGENDADA
+    C-->>BO: cita agendada
+```
+
+La confirmación del comprador cambia `AGENDADA` a `CONFIRMADA`. Calendar se crea o actualiza después del `COMMIT`; su falla no revierte la cita.
+
+#### 10.3.5. Secuencia alternativa: estado terminal o conflicto de horario
+
+```mermaid
+sequenceDiagram
+    actor U as Usuario interno
+    participant C as AppointmentController
+    participant S as AppointmentSchedulingService
+    participant V as VehicleAvailabilityPort
+    participant P as SellerAvailabilityPolicy
+
+    U->>C: Agendar solicitud
+    C->>S: schedule(command)
+    S->>V: getState(vehicleId)
+
+    alt vehículo VENDIDO o RETIRADO
+        V-->>S: VENDIDO
+        S-->>C: VEHICLE_NOT_AVAILABLE
+        C-->>U: 409 Conflict
+    else vehículo disponible
+        V-->>S: PUBLICADO
+        S->>P: evaluate(sellerId, date, duration)
+        P-->>S: conflicto + alternativas
+        S-->>C: APPOINTMENT_TIME_CONFLICT
+        C-->>U: 409 + horarios alternativos
+    end
+```
+
+#### 10.3.6. Análisis de robustez
+
+```mermaid
+flowchart LR
+    web["«boundary»\nSitio público / Backoffice"]
+    controller["«boundary»\nAppointmentController"]
+    service["«control»\nAppointmentSchedulingService"]
+    assignment["«control»\nSellerAssignmentPolicy"]
+    availability["«control»\nSellerAvailabilityPolicy"]
+    vehiclePolicy["«control»\nVehicleAppointmentPolicy"]
+    leadControl["«control»\nLeadService"]
+    appointment["«entity»\nAppointment"]
+    lead["«entity»\nLead"]
+    vehicle["«entity»\nVehicle (consulta)"]
+    audit["«entity»\nAuditEvent"]
+    outbox["«entity»\nOutboxEvent"]
+
+    web --> controller
+    controller --> service
+    service --> assignment
+    service --> availability
+    service --> vehiclePolicy
+    service --> leadControl
+    service --> appointment
+    leadControl --> lead
+    vehiclePolicy --> vehicle
+    service --> audit
+    service --> outbox
+```
+
+| Falla | Momento | Respuesta | Resultado |
+|---|---|---|---|
+| Solicitud duplicada | Alta pública | Reutilizar resultado de `Idempotency-Key` | No duplica lead ni cita. |
+| Vehículo vendido antes de agendar | `schedule` | `409 VEHICLE_NOT_AVAILABLE` | La solicitud puede cancelarse con motivo. |
+| Vendedor ocupado | Política de disponibilidad | `409` + alternativas | No sobrescribe citas existentes. |
+| Dos solicitudes superan la consulta previa | Restricción de exclusión en PostgreSQL | `409 APPOINTMENT_TIME_CONFLICT` y rollback | Solo un intervalo queda confirmado. |
+| Versión obsoleta | Guardado | `412` | No pierde reprogramaciones concurrentes. |
+| Calendar caído | Después del `COMMIT` | Reintento por Outbox | Cita `AGENDADA`; sincronización pendiente. |
+| Error al auditar | Transacción local | Rollback | No queda cambio de estado sin evidencia. |
+
+#### 10.3.7. Contratos públicos e internos
+
+##### Solicitar visita
+
+```http
+POST /api/public/visit-requests
+Idempotency-Key: 7f4f96e5-3196-4cf3-b40a-78e059038d1f
+Content-Type: application/json
+```
+
+```json
+{
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "name": "María López",
+  "phone": "+50688887777",
+  "preferredAt": "2026-08-08T10:00:00-06:00",
+  "notes": "Prefiere confirmación por WhatsApp"
+}
+```
+
+```json
+{
+  "appointmentId": "6bbd56d8-a6b6-4fb9-9301-f6699033b319",
+  "status": "SOLICITADA",
+  "vehicleId": "2a650ee4-9e8d-43cc-9b5a-916d37a19b48",
+  "preferredAt": "2026-08-08T10:00:00-06:00"
+}
+```
+
+##### Agendar solicitud
+
+```http
+POST /api/appointments/{appointmentId}/schedule
+Authorization: Bearer <token>
+If-Match: "3"
+Content-Type: application/json
+```
+
+```json
+{
+  "sellerId": "64ad9985-f178-4bbc-817d-c39bc46e890a",
+  "scheduledAt": "2026-08-08T10:30:00-06:00",
+  "durationMinutes": 45
+}
+```
+
+```json
+{
+  "appointmentId": "6bbd56d8-a6b6-4fb9-9301-f6699033b319",
+  "status": "AGENDADA",
+  "version": 4,
+  "sellerId": "64ad9985-f178-4bbc-817d-c39bc46e890a",
+  "scheduledAt": "2026-08-08T10:30:00-06:00",
+  "calendarSyncStatus": "PENDING"
+}
+```
+
+##### Errores
+
+| HTTP | Código | Condición |
+|---|---|---|
+| `404` | `VEHICLE_NOT_FOUND` | El vehículo no existe o no es visible. |
+| `404` | `APPOINTMENT_NOT_FOUND` | La solicitud o cita no existe. |
+| `409` | `VEHICLE_NOT_AVAILABLE` | Está vendido o retirado. |
+| `409` | `APPOINTMENT_TIME_CONFLICT` | El responsable ya tiene otra cita. |
+| `409` | `INVALID_APPOINTMENT_TRANSITION` | El estado de cita no permite la acción. |
+| `412` | `STALE_APPOINTMENT_VERSION` | La cita cambió antes de guardar. |
+| `422` | `INVALID_APPOINTMENT_TIME` | Fuera del horario o fecha inválida. |
+
+#### 10.3.8. Contratos internos
+
+```java
+public interface VehicleAvailabilityPort {
+    VehicleState getState(UUID vehicleId);
+}
+
+public interface SellerAvailabilityPolicy {
+    AvailabilityResult evaluate(
+        UUID sellerId,
+        Instant start,
+        Duration duration
+    );
+}
+
+public interface AppointmentRepository {
+    Optional<Appointment> findById(UUID appointmentId);
+    List<Appointment> findConflicts(
+        UUID sellerId,
+        Instant start,
+        Duration duration
+    );
+    Appointment saveScheduledIfNoOverlap(
+        Appointment appointment,
+        long expectedVersion
+    );
+}
+```
+
+La consulta de disponibilidad permite ofrecer alternativas, pero la defensa final se mantiene en PostgreSQL mediante una restricción de exclusión conceptual:
+
+```sql
+EXCLUDE USING gist (
+  seller_id WITH =,
+  tstzrange(scheduled_at, scheduled_at + duration, '[)') WITH &&
+)
+WHERE (status IN ('AGENDADA', 'CONFIRMADA'));
+```
+
+La implementación debe habilitar el soporte GiST necesario y traducir la violación de la restricción a `409 APPOINTMENT_TIME_CONFLICT`.
+
+
+### 10.4. Diseño complementario: Gestor seguro de documentos
+
+Este componente complementario responde al escenario S07-Q6. Google Drive conserva los archivos, pero la aplicación decide quién puede acceder, qué se registra y cómo se detecta un permiso más amplio que el autorizado.
+
+#### 10.4.1. Responsabilidad y límites
+
+**Contenedores:** API central, Procesador de integraciones y PostgreSQL.  
+**Sistema externo:** Google Drive.  
+**Responsabilidad:** registrar metadatos, clasificar sensibilidad, autorizar cada operación, mediar el acceso al archivo, auditar acciones y reconciliar existencia y permisos.
+
+La aplicación no expone al sitio público una URL permanente de Drive para documentos sensibles. El acceso ocurre mediante la API, después de validar identidad, rol, relación con el vehículo y finalidad de uso.
+
+#### 10.4.2. Clasificación de información
+
+| Clasificación | Ejemplos | Acceso permitido | Exposición externa |
+|---|---|---|---|
+| `PUBLICA` | Fotografías comerciales aprobadas y ficha pública. | Comprador y usuarios internos. | Puede mostrarse en el sitio propio. |
+| `INTERNA` | Lista de fotos pendientes, checklist operativo. | Personal autenticado relacionado con el proceso. | No. |
+| `CONFIDENCIAL` | Contrato de consignación, valoración y condiciones comerciales. | Dueño, responsable financiero y encargado autorizado. | No. |
+| `RESTRINGIDA` | Identificación del consignante, título o documentos legales del vehículo. | Dueño, encargado de documentos y administrador con motivo válido. | No. |
+
+La clasificación se asigna por tipo documental y solo un rol autorizado puede reducirla. Todo cambio de clasificación queda auditado.
+
+#### 10.4.3. Vista de componentes
+
+```mermaid
+flowchart LR
+    controller["DocumentController\nREST boundary"]
+    service["SecureDocumentService\nOrquestación"]
+    authz["DocumentAuthorizationPolicy\nRol + recurso + finalidad"]
+    classifier["DocumentClassificationPolicy"]
+    inspection["DocumentContentInspectionPort\nTipo, tamaño y malware"]
+    repo["DocumentMetadataRepository"]
+    audit["AuditPort"]
+    reconcile["DrivePermissionReconciler"]
+    drivePort["DocumentStoragePort"]
+    driveAdapter["GoogleDriveAdapter"]
+    db[("PostgreSQL")]
+    drive["Google Drive"]
+
+    controller --> service
+    service --> authz
+    service --> classifier
+    service --> inspection
+    service --> repo
+    service --> audit
+    service --> drivePort
+    reconcile --> repo
+    reconcile --> drivePort
+    drivePort --> driveAdapter
+    driveAdapter --> drive
+    repo --> db
+    audit --> db
+```
+
+| Componente | Responsabilidad |
+|---|---|
+| `SecureDocumentService` | Coordina carga, consulta, revisión, descarga y eliminación lógica. |
+| `DocumentAuthorizationPolicy` | Evalúa identidad, rol, vehículo, clasificación, acción y finalidad. |
+| `DocumentClassificationPolicy` | Define clasificación mínima y reglas de cambio por tipo. |
+| `DocumentContentInspectionPort` | Valida tipo real, tamaño, huella y resultado de inspección antes de habilitar el archivo. |
+| `DocumentStoragePort` | Oculta el contrato de Drive y evita que el dominio use su SDK. |
+| `GoogleDriveAdapter` | Carga, lee, elimina y consulta permisos con credenciales de servicio limitadas. |
+| `DrivePermissionReconciler` | Detecta archivos ausentes, enlaces públicos o permisos no esperados. |
+| `DocumentMetadataRepository` | Conserva referencia externa, estado, sensibilidad, hash, propietario funcional y retención. |
+| `AuditPort` | Registra carga, visualización, descarga, rechazo, reclasificación y eliminación. |
+
+#### 10.4.4. Modelo de autorización
+
+La autorización combina rol y contexto; no se limita a preguntar si el usuario está autenticado.
+
+```text
+permitir = rol autorizado
+        AND acción permitida para la clasificación
+        AND usuario relacionado con el proceso o con privilegio administrativo
+        AND vehículo visible para el usuario
+        AND finalidad declarada válida
+        AND documento no está en CUARENTENA ni ELIMINADO
+```
+
+| Rol | Pública | Interna | Confidencial | Restringida |
+|---|---:|---:|---:|---:|
+| Cliente comprador | Lectura aprobada | No | No | No |
+| Vendedor | Lectura | Lectura | Solo documentos comerciales asignados | No |
+| Encargado de documentos | Lectura/escritura | Lectura/escritura | Lectura/escritura según tipo | Lectura/escritura con auditoría |
+| Responsable financiero | Lectura | Lectura | Lectura de contratos y cierre | No, salvo autorización explícita |
+| Dueño del negocio | Lectura | Lectura | Lectura/escritura | Lectura con motivo |
+| Administrador técnico | Sin necesidad operativa por defecto | Diagnóstico de metadatos | No accede al contenido por defecto | Acceso excepcional, temporal y auditado |
+
+El rol técnico administra integración y permisos, pero no obtiene acceso general al contenido sensible. El acceso excepcional requiere motivo y queda visible en auditoría.
+
+#### 10.4.5. Reglas de almacenamiento y privacidad
+
+1. Las carpetas se ubican en una unidad o espacio administrado por la organización, no en cuentas personales de vendedores.
+2. Se prohíbe el permiso “cualquiera con el enlace” para archivos `INTERNA`, `CONFIDENCIAL` o `RESTRINGIDA`.
+3. Las credenciales de integración se guardan fuera del código y con alcance mínimo sobre la ubicación administrada.
+4. Todo tráfico entre aplicación y Drive usa HTTPS; el acceso desde cliente pasa por la API.
+5. PostgreSQL guarda la referencia externa, no una URL pública reutilizable.
+6. Los logs no contienen contenido, números de identificación, tokens ni enlaces de acceso.
+7. La auditoría registra identificador de documento, actor, acción, fecha, vehículo, finalidad y `correlationId`, no una copia del archivo.
+8. La retención se configura por tipo documental. Al vencer, el archivo se elimina o anonimiza según la obligación aplicable y se conserva un registro mínimo de la acción.
+9. Una solicitud de eliminación se ejecuta en Drive y deja una marca de eliminación en PostgreSQL; no se reutiliza la referencia.
+10. Las copias de evidencia de publicaciones se almacenan separadas de los documentos personales.
+11. Los archivos se almacenan en una ubicación administrada con cifrado en tránsito y en reposo; si el proveedor o la configuración no puede demostrarlo, el tipo documental no se habilita.
+12. La finalidad (`purpose`) pertenece a una lista controlada por acción y rol; no se acepta texto libre como justificación suficiente.
+13. Reducir un documento `RESTRINGIDA` a una clasificación menor requiere aprobación de dos roles distintos y auditoría.
+14. El acceso excepcional del administrador técnico tiene vencimiento, documento específico y aprobación del dueño o encargado de documentos.
+15. Antes de pasar a `VERIFICADO`, una carga debe superar validación de tipo, tamaño y contenido; si el servicio de inspección no está disponible, permanece `PENDIENTE_REVISION`.
+
+#### 10.4.6. Flujo principal: consultar un documento restringido
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Usuario autorizado
+    participant C as DocumentController
+    participant S as SecureDocumentService
+    participant P as DocumentAuthorizationPolicy
+    participant R as DocumentMetadataRepository
+    participant D as DocumentStoragePort
+    participant A as AuditPort
+
+    U->>C: GET /vehicles/{v}/documents/{d}/content?purpose=...
+    C->>S: getContent(actor, vehicleId, documentId, purpose)
+    S->>R: find(documentId)
+    R-->>S: metadata(RESTRINGIDA, VERIFICADO)
+    S->>P: authorize(actor, metadata, READ, purpose)
+    P-->>S: permitido
+    S->>A: append(DOCUMENT_ACCESS_GRANTED)
+    S->>D: openStream(driveReference)
+    alt entrega finaliza en el servidor
+        D-->>S: flujo de contenido
+        S->>A: append(DOCUMENT_TRANSFER_COMPLETED)
+        S-->>C: stream con no-store y nombre sanitizado
+        C-->>U: 200 contenido
+    else Drive o transferencia falla
+        D--xS: error
+        S->>A: append(DOCUMENT_TRANSFER_FAILED)
+        S-->>C: 503 sin enlace alternativo
+        C-->>U: 503 DOCUMENT_STORAGE_UNAVAILABLE
+    end
+```
+
+La auditoría diferencia autorización concedida de transferencia completada. Esto evita interpretar un permiso válido como prueba de que el usuario recibió todo el archivo.
+
+Cabeceras de salida para documentos sensibles:
+
+```http
+Cache-Control: no-store, private
+Pragma: no-cache
+Content-Disposition: attachment; filename="documento-vehiculo.pdf"
+X-Content-Type-Options: nosniff
+```
+
+#### 10.4.7. Flujos alternativos y controles
+
+| Falla o amenaza | Respuesta del diseño | Estado persistido / evidencia |
+|---|---|---|
+| Usuario sin permiso | `403`; no se consulta Drive. | Intento denegado auditado sin contenido. |
+| Documento no pertenece al vehículo solicitado | `404` para evitar enumeración. | Evento de seguridad correlacionado. |
+| Archivo fue borrado fuera de la aplicación | `410 DOCUMENT_CONTENT_MISSING`. | Metadato `MISSING`, tarea para encargado. |
+| Drive devuelve permiso público inesperado | Se revoca cuando el adaptador lo permite y se pone en `CUARENTENA`. | Alerta crítica, auditoría e incidente. |
+| Enlace compartido por fuera del sistema | No funciona si no tiene permiso directo; la aplicación no genera enlaces permanentes. | Reconciliación detecta permisos extra. |
+| Malware o archivo no permitido | Carga queda `PENDIENTE_REVISION`; no se expone. | Resultado de validación y responsable. |
+| Servicio de inspección no disponible | Falla cerrada; no se publica ni verifica el archivo. | Estado `PENDIENTE_REVISION`, alerta y reintento controlado. |
+| Token o credencial expirada | No se amplían permisos; falla cerrada. | Evento Outbox/operativo para renovar credencial. |
+| Eliminación solicitada | Se elimina en Drive y se marca `ELIMINADO`. | Actor, motivo y fecha; sin contenido en auditoría. |
+
+#### 10.4.8. Reconciliación de Drive
+
+El `DrivePermissionReconciler` se ejecuta diariamente y también bajo demanda después de un incidente. Revisa:
+
+- existencia del archivo;
+- coincidencia entre referencia y vehículo;
+- propietario o ubicación esperada;
+- ausencia de permisos públicos o externos no autorizados;
+- tamaño, tipo y huella cuando estén disponibles;
+- archivos sin metadatos y metadatos sin archivo;
+- documentos vencidos según política de retención.
+
+Resultados:
+
+| Resultado | Acción |
+|---|---|
+| `OK` | Actualiza fecha de verificación. |
+| `MISSING` | Bloquea acceso y crea tarea. |
+| `PERMISSION_DRIFT` | Revoca permiso cuando sea seguro, pone en cuarentena y alerta. |
+| `ORPHAN_FILE` | No se borra automáticamente; se asigna revisión. |
+| `RETENTION_DUE` | Inicia flujo aprobado de eliminación. |
+
+#### 10.4.9. Contratos
+
+```http
+POST /api/vehicles/{vehicleId}/documents
+GET  /api/vehicles/{vehicleId}/documents
+GET  /api/vehicles/{vehicleId}/documents/{documentId}/content?purpose=CLOSING_REVIEW
+POST /api/vehicles/{vehicleId}/documents/{documentId}/verify
+POST /api/vehicles/{vehicleId}/documents/{documentId}/reclassify
+DELETE /api/vehicles/{vehicleId}/documents/{documentId}
+```
+
+Errores principales:
+
+| HTTP | Código | Uso |
+|---|---|---|
+| `400` | `INVALID_DOCUMENT_TYPE` | Tipo o metadato inválido. |
+| `403` | `DOCUMENT_ACCESS_DENIED` | Actor o finalidad no autorizados. |
+| `404` | `DOCUMENT_NOT_FOUND` | No existe o no es visible. |
+| `409` | `DOCUMENT_NOT_READY` | Pendiente de revisión o en cuarentena. |
+| `410` | `DOCUMENT_CONTENT_MISSING` | Metadato existe, archivo externo no. |
+| `422` | `CLASSIFICATION_DOWNGRADE_REJECTED` | No se permite reducir sensibilidad. |
+| `503` | `DOCUMENT_STORAGE_UNAVAILABLE` | Drive no disponible; no se omite autorización. |
+## 11. Patrones de diseño aplicados
+
+### 11.1. Patrón State para el ciclo de vida
+
+#### Problema específico
+
+El comportamiento permitido cambia según el estado actual: `PUBLICADO` puede reservarse, `RESERVADO` puede volver a publicado o venderse y los estados terminales rechazan nuevas transiciones. Un `switch` central acumularía permisos, precondiciones y efectos de todos los estados.
+
+#### Aplicación
+
+```mermaid
+classDiagram
+    class VehicleStateResolver {
+      +resolve(state) VehicleStateBehavior
+    }
+
+    class VehicleStateBehavior {
+      <<interface>>
+      +evaluate(target, context) TransitionDecision
+      +availableTransitions(context)
+    }
+
+    class PublishedState
+    class ReservedState
+    class SoldState
+    class RetiredState
+    class VehicleLifecycleService
+
+    VehicleStateBehavior <|.. PublishedState
+    VehicleStateBehavior <|.. ReservedState
+    VehicleStateBehavior <|.. SoldState
+    VehicleStateBehavior <|.. RetiredState
+    VehicleLifecycleService --> VehicleStateResolver
+    VehicleStateResolver --> VehicleStateBehavior
+```
+
+El enum `VehicleState` sigue almacenado en PostgreSQL. `VehicleStateResolver` transforma ese valor persistido en el objeto de comportamiento correspondiente. Esto evita introducir herencia ORM y conserva el patrón en la capa de dominio.
+
+#### Justificación
+
+State se usa porque las reglas varían principalmente por el estado de origen. Cada implementación concentra destinos, permiso requerido y especificaciones aplicables. El servicio de aplicación mantiene la transacción, pero no contiene una matriz de `if/switch` con todas las reglas.
+
+#### Por qué no otro patrón
+
+- **Tabla de transición únicamente:** representa origen y destino, pero no encapsula permisos, precondiciones y efectos.
+- **Strategy elegida por el controlador:** movería una decisión del dominio a la frontera HTTP.
+- **Motor BPM:** permitiría procesos configurables, pero añade operación y complejidad que el alcance actual no justifica.
+
+### 11.2. Strategy + Adapter para canales externos
+
+#### Problema específico
+
+CRAutos, Facebook Marketplace, Encuentra24 y los canales manuales no comparten el mismo contrato ni el mismo nivel de automatización.
+
+#### Aplicación
+
+```mermaid
+classDiagram
+    class PublicationChannel {
+      <<interface>>
+      +updatePrice(command)
+      +updateAvailability(command)
+      +closePublication(command)
+    }
+
+    class PublicationChannelResolver {
+      +resolve(channel) PublicationChannel
+    }
+
+    class CRAutosAdapter
+    class FacebookAdapter
+    class Encuentra24Adapter
+    class ManualPublicationAdapter
+
+    PublicationChannel <|.. CRAutosAdapter
+    PublicationChannel <|.. FacebookAdapter
+    PublicationChannel <|.. Encuentra24Adapter
+    PublicationChannel <|.. ManualPublicationAdapter
+    PublicationChannelResolver --> PublicationChannel
+```
+
+#### Justificación
+
+Strategy permite seleccionar el comportamiento por canal. Adapter traduce el contrato interno a la API o tarea concreta. El dominio trabaja con una intención uniforme sin conocer OAuth, URLs, payloads o limitaciones del proveedor.
+
+#### Alternativa descartada
+
+Un servicio único con condicionales por proveedor tendría menor número de clases, pero mezclaría autenticación, errores, formatos y políticas manuales. Agregar un canal obligaría a modificar el mismo servicio.
+
+### 11.3. Transactional Outbox para efectos externos
+
+#### Problema específico
+
+Una reserva, venta, retiro o cambio de precio debe quedar confirmado aunque falle el proveedor externo. Publicar un mensaje después del `COMMIT` crea una ventana donde el cambio se guarda, pero el evento puede perderse.
+
+#### Aplicación
+
+```mermaid
+sequenceDiagram
+    participant API as API central
+    participant DB as PostgreSQL
+    participant W as Procesador
+    participant EXT as Canal externo
+
+    API->>DB: BEGIN
+    API->>DB: UPDATE vehículo/publicación
+    API->>DB: INSERT auditoría
+    API->>DB: INSERT outbox_event
+    API->>DB: COMMIT
+    W->>DB: reclamar evento pendiente
+    W->>EXT: ejecutar efecto
+    EXT-->>W: resultado
+    W->>DB: actualizar publicación y evento
+```
+
+#### Justificación
+
+Outbox garantiza que el cambio interno y la intención de sincronización se guardan juntos. El procesador puede reintentar sin mantener abierta la transacción del usuario.
+
+#### Alternativas descartadas
+
+- **Llamada sincrónica al proveedor:** aumenta latencia y acopla la operación a su disponibilidad.
+- **Publicar mensaje después del `COMMIT`:** puede perder el evento si el proceso cae entre ambos pasos.
+- **Broker adicional desde el inicio:** aporta escalamiento, pero agrega operación y no elimina por sí solo el problema de dual write.
+
+### 11.4. Specification para precondiciones
+
+#### Problema específico
+
+Publicar, reservar, vender o retirar requiere validar combinaciones distintas de documentos, fotos, precio, comprador, aprobación y motivo.
+
+#### Aplicación
+
+```mermaid
+classDiagram
+    class Specification~T~ {
+      <<interface>>
+      +isSatisfiedBy(candidate) boolean
+      +and(other) Specification
+      +or(other) Specification
+    }
+
+    class HasMinimumDocuments
+    class HasMinimumPhotos
+    class HasApprovedPrice
+    class HasBuyer
+    class HasWithdrawalReason
+
+    Specification <|.. HasMinimumDocuments
+    Specification <|.. HasMinimumPhotos
+    Specification <|.. HasApprovedPrice
+    Specification <|.. HasBuyer
+    Specification <|.. HasWithdrawalReason
+```
+
+#### Justificación
+
+Specification permite componer precondiciones y devolver una causa funcional concreta. Las reglas pueden reutilizarse en la consulta de transiciones disponibles y en la ejecución real.
+
+#### Alternativa descartada
+
+Validaciones dispersas dentro de controladores duplicarían lógica y permitirían que dos interfaces presenten resultados diferentes.
+
+
+### 11.5. Trazabilidad de patrones al diseño
+
+| Patrón | Problema del sistema | Clases donde se aplica | Requerimientos |
+|---|---|---|---|
+| State | Comportamiento distinto según estado del vehículo. | `VehicleStateBehavior`, estados concretos, `VehicleStateResolver`. | `REQ-LCV-01`, `REQ-LCV-03`. |
+| Strategy + Adapter | Canales con contratos y capacidades diferentes. | `PublicationChannel`, resolver y adaptadores. | `REQ-PUB-03`, `REQ-INT-01`. |
+| Transactional Outbox | Evitar perder el efecto externo luego del cambio interno. | `OutboxPort`, `OutboxEventReader`, `PublicationSyncCoordinator`. | `REQ-PUB-01`, `REQ-PUB-02`, `REQ-APT-01`. |
+| Specification | Componer precondiciones sin duplicarlas. | `TransitionSpecification` y especificaciones concretas. | `REQ-LCV-01`, `REQ-LCV-02`. |
+
+---
+## 12. Principios y técnicas habilitadoras — evidencia
+
+### 12.1. Evidencia de SOLID
+
+| Principio | Evidencia concreta | Referencia verificable |
+|---|---|---|
+| **S — Responsabilidad única** | `VehicleLifecycleController` traduce HTTP; `VehicleLifecycleService` orquesta una transición; `VehicleStateBehavior` decide reglas del estado; `PublicationChannel` traduce proveedores. | Aristas y métodos en 10.1.3, 10.2.3 y 10.3.3. |
+| **O — Abierto/cerrado** | Un nuevo marketplace implementa `PublicationChannel`; un nuevo estado implementa `VehicleStateBehavior`. Los casos de uso existentes no cambian, aunque el registro del resolver y el catálogo de estados sí deben ampliarse. | 11.1 y 11.2. |
+| **L — Sustitución de Liskov** | Todo adaptador acepta el mismo comando, no modifica `Vehicle`, no deja escapar excepciones del SDK y clasifica el resultado como éxito, manual, reintentable o dead-letter. El coordinador puede sustituir un adaptador por otro sin alterar sus invariantes. | 10.2.8 y pruebas de contrato 8.7. |
+| **I — Segregación de interfaces** | `VehicleAvailabilityPort` solo permite leer estado; `OutboxPort` solo agrega eventos; `PublicationChannel` no expone credenciales ni repositorios. | 10.1.8, 10.2.8 y 10.3.8. |
+| **D — Inversión de dependencias** | Servicios de aplicación dependen de puertos; PostgreSQL, Calendar y marketplaces quedan en adaptadores. | Vistas 3.3–3.5. |
+
+### 12.2. Tensiones entre principios y decisión tomada
+
+| Tensión | Evidencia | Decisión | Límite de aceptación |
+|---|---|---|---|
+| **SRP vs. consistencia transaccional** | `VehicleLifecycleService` usa ocho colaboradores. | Conserva una sola responsabilidad: orquestar la transición; reglas y detalles se delegan. | Fan-out directo `<= 8`; si aumenta, extraer una coordinación secundaria sin dividir la transacción. |
+| **OCP vs. visibilidad operacional** | Los adaptadores son sustituibles, pero cada proveedor tiene capacidades y fallos propios. | `ChannelCapabilities` hace explícitas las diferencias sin condicionales en el dominio. | Un nuevo canal no modifica `PublicationSyncCoordinator`; solo registro y adaptador. |
+| **ISP vs. número de interfaces** | Puertos pequeños aumentan clases. | Mantener interfaces separadas cuando cambian por razones distintas o cruzan un límite técnico. | No crear interfaces para utilidades internas estables sin sustitución o prueba aislada requerida. |
+| **DIP vs. complejidad inicial** | Repositorios, auditoría, Outbox y proveedores usan puertos. | Aplicar DIP en límites de persistencia e integración; no en cada clase de dominio. | Cero dependencias del dominio a paquetes de SDK, Spring Web o persistencia. |
+| **State vs. persistencia simple** | Objetos State puros complicarían el mapeo ORM. | Persistir enum y resolver el objeto de comportamiento. | La resolución debe estar centralizada; no se permiten `switch` de transición fuera del resolver/States. |
+
+### 12.3. Técnicas habilitadoras
+
+| Técnica | Uso exacto | Problema que controla | Evidencia |
+|---|---|---|---|
+| **Control optimista con `version` e `If-Match`** | Vehículos y citas. | Evita sobrescribir cambios concurrentes. | Secuencias 10.1.5 y contratos 10.3.7. |
+| **Índice único parcial** | Una reserva `ACTIVA` por vehículo. | Defensa final ante dos reservas concurrentes. | Robustez 10.1.6. |
+| **Idempotency-Key** | Transiciones y solicitudes públicas. | Evita repetir una intención por timeout. | Contratos 10.1.7 y 10.3.7. |
+| **Clave `eventId + publicationId`** | Acciones de publicación. | Permite fan-out y reintento independiente. | 10.2.7. |
+| **Outbox transaccional** | Precio, estado, publicaciones y Calendar. | Evita perder el efecto externo luego del `COMMIT`. | 11.3. |
+| **Reintentos con espera creciente** | Fallos `429`, timeout o `503`. | Reduce presión y conserva el pendiente. | 10.2.5 y 10.2.6. |
+| **Estados operativos separados** | Evento, acción y publicación usan ciclos distintos. | Evita confundir tarea creada, sincronización lograda y fallo operativo. | 10.2.2 y 10.2.10. |
+| **Proyección de lectura e índices** | Ficha de vehículo. | Protege el p95 sin consultar terceros. | S07-Q1, sección 8.3. |
+| **Auditoría de solo inserción** | Precio, estado, documentos, citas y publicaciones. | Conserva trazabilidad funcional. | `AuditPort` en los tres componentes. |
+| **Autorización en API** | Transiciones y documentos sensibles. | Evita depender del backoffice. | `AuthorizationService` y `REQ-SEC-01`. |
+
+
+### 12.4. Técnicas de operación y seguridad
+
+| Técnica | Aplicación | Criterio verificable |
+|---|---|---|
+| **Dead-letter controlado** | Eventos no recuperables salen del ciclo automático y requieren actor/motivo para replay. | Cero replays anónimos; 100% con auditoría. |
+| **Bloqueo con vencimiento** | `locked_by` y `locked_until` evitan doble consumo y permiten recuperar workers caídos. | Un evento no se procesa simultáneamente por dos workers. |
+| **Datos de error sanitizados** | Se persisten clase, código y resumen, no secretos ni payloads completos. | Escaneo de logs y base sin tokens ni PII documental. |
+| **Acceso mediado a Drive** | La API autoriza y entrega contenido; no expone enlaces permanentes sensibles. | Cero documentos restringidos con permiso público. |
+| **Reconciliación de permisos** | Proceso diario compara metadatos y permisos reales. | 100% de archivos sensibles revisados dentro de la ventana configurada. |
+| **Segregación operativa** | Quien ejecuta una tarea manual crítica no es quien la verifica. | 100% de retiros y cambios de disponibilidad manuales con verificador. |
+---
+
+# BLOQUE 6 — CALIDAD Y TRAZABILIDAD
+*Hito: Entrega final (S14)*
+
+---
+
+## 13. Análisis de calidad del diseño
+
+### 13.1 Validación de escenarios de calidad
+
+La tabla confirma que cada escenario tiene una respuesta y una prueba definida. El estado “pendiente” indica que todavía se necesita ejecutar la prueba sobre código desplegado.
+
+| Escenario S07 | Respuesta del diseño final | Prueba | Criterio de aceptación | Estado de evidencia |
+|---|---|---|---|---|
+| **1. Consulta rápida de inventario** | `VehicleQueryService`, proyección e índices; cero llamadas externas. | Carga con mezcla de búsquedas y detalle. | p95 < 3 s; error < 1%. | Diseño cubierto; ejecución pendiente. |
+| **2. Cambio de precio** | Transacción local + auditoría + acciones por publicación + Outbox. | Integración con proveedor simulado. | Precio < 2 s; 100% auditado; acción visible < 1 min; intento < 20 min. | Diseño cubierto; ejecución pendiente. |
+| **3. Reservado, vendido o retirado** | State, autorización, versión e índice único. | Dos reservas concurrentes y cita sobre estado terminal. | Bloqueo < 2 s; una reserva activa; tareas < 1 min. | Diseño cubierto; ejecución pendiente. |
+| **4. Falla de integración** | Estados separados de evento/acción/publicación, reintentos, dead-letter por acción, alertas, responsable y replay auditado. | Timeout, `503`, `401`, payload inválido, worker detenido y recuperación. | Cambio interno intacto; error visible < 1 min; primer intento < 20 min; dead-letter alertado y replay sin duplicar. | Diseño y runbook cubiertos; ejecución pendiente. |
+| **5. Registro de cliente potencial** | Solicitud pública con cuatro campos y `LeadService`. | Prueba de usabilidad. | Completar < 1 min; máximo cinco campos. | Contrato cubierto; prueba con usuarios pendiente. |
+| **6. Acceso a documentos** | Clasificación, autorización contextual, acceso mediado, auditoría y reconciliación de permisos en Drive. | Matriz de roles, intento de enlace público, archivo ausente y permission drift. | 100% valida autorización; cero enlaces públicos sensibles; todo acceso permitido auditado; drift detectado dentro de la ventana diaria. | Diseño cubierto; ejecución pendiente. |
+
+
+#### 13.1.1 Matriz integral de validación
+
+| Escenario S07 | ADRs | Contenedores | Componentes | Contratos / datos | Métrica y prueba |
+|---|---|---|---|---|---|
+| **Q1 Consulta rápida de inventario** | ADR-001 | Backoffice, sitio público, API, PostgreSQL | `VehicleQueryService`, repositorio/proyección | Consulta de ficha; índices y proyección local | p95 < 3 s; prueba de carga sin llamadas externas. |
+| **Q2 Cambio de precio y publicaciones** | ADR-001, ADR-005, ADR-007, ADR-008 | API, procesador, PostgreSQL | Gestor de ciclo/precio, `PublicationEffectService`, `PublicationSyncCoordinator`, auditoría | Evento Outbox y acción por publicación | Cambio interno < 2 s; acción visible < 1 min; intento automático < 20 min. |
+| **Q3 Reservado, vendido o retirado** | ADR-002, ADR-003, ADR-005, ADR-007 | Backoffice, API, procesador, PostgreSQL | `VehicleLifecycleService`, State, `ReservationService`, efectos de publicación | Transición REST, `If-Match`, índice único, Outbox | Una reserva activa; bloqueo < 2 s; pruebas concurrentes. |
+| **Q4 Falla de integración externa** | ADR-004, ADR-005, ADR-008, ADR-009 | Procesador, PostgreSQL, sistemas externos | `OutboxEventReader`, coordinador, Retry, dead-letter, adaptadores manuales | Estados de evento/acción, replay y tarea manual | Error visible < 1 min; edad máxima < 20 min o escalada; prueba 503/401/400. |
+| **Q5 Registro de cliente potencial** | ADR-002 | Sitio público, API, PostgreSQL | `LeadService`, `AppointmentSchedulingService` | Alta rápida y solicitud de visita | ≤ 5 campos y < 1 min en prueba de usabilidad. |
+| **Q6 Acceso a documentos sensibles** | ADR-001, ADR-006, ADR-007, ADR-010 | API, procesador, PostgreSQL, Google Drive | `SecureDocumentService`, políticas, inspección, reconciliador y auditoría | Metadatos, clasificación, descarga mediada | 100% valida autorización; cero permisos públicos; matriz de roles y prueba de drift. |
+
+Esta matriz es la referencia principal para revisar consistencia. Un cambio en un escenario obliga a revisar sus ADRs, vista C4, componentes, contrato y prueba asociados.
+
+
+### 13.2 Análisis de trade-offs entre atributos de calidad
+
+#### 13.2.1 Consistencia fuerte interna vs. disponibilidad externa
+
+- **Elección:** transacción local fuerte; consistencia eventual con canales.
+- **Beneficio medible:** una reserva confirma vehículo, reserva, auditoría y Outbox en una transacción.
+- **Costo medible:** una acción puede permanecer `EN_REINTENTO` hasta 20 minutos o pasar a tarea manual.
+- **Indicador:** edad máxima de acciones no terminales y porcentaje sincronizado antes de 20 minutos.
+
+#### 13.2.2 Monolito modular vs. microservicios
+
+- **Elección:** API central como monolito modular.
+- **Beneficio:** una transacción local para reglas que cruzan inventario, reserva y publicaciones.
+- **Costo:** despliegue y escalamiento conjunto.
+- **Indicador de revisión:** ciclos entre módulos, tiempo de despliegue y necesidad real de escalar un módulo de forma independiente.
+
+#### 13.2.3 Coordinadores con fan-out alto vs. fragmentación del caso de uso
+
+- **Elección:** fan-out máximo de diseño igual a 8.
+- **Beneficio:** el orden transaccional queda explícito.
+- **Costo:** mayor CBO en servicios de aplicación.
+- **Control:** una razón de cambio por coordinador, colaboradores pequeños y cero SDK externos.
+
+#### 13.2.4 State + Specification vs. menor número de clases
+
+- **Elección:** objetos State y especificaciones componibles.
+- **Beneficio:** reglas separadas por estado y precondición.
+- **Costo:** más clases y registro explícito.
+- **Indicador:** complejidad ciclomática del coordinador y número de `switch` sobre estados fuera del resolver.
+
+#### 13.2.5 Proyección de lectura vs. normalización estricta
+
+- **Elección:** ficha preparada para consultas frecuentes.
+- **Beneficio:** no se consulta Drive, Calendar o marketplaces al abrir la ficha.
+- **Costo:** duplicación controlada y riesgo de atraso interno.
+- **Indicador:** p95 de consulta, retraso de actualización de proyección y reconciliaciones fallidas.
+
+
+### 13.3 Métricas de diseño — estimación
+
+#### 13.3.1 Método de medición
+
+Se distinguen tres niveles de evidencia:
+
+1. **Calculado desde diagramas:** número de colaboradores directos, dependencias entre módulos y dependencias a proveedores.
+2. **Meta para el código:** LCOM4, ciclos entre paquetes y reglas ArchUnit. No se afirma un resultado hasta ejecutar las herramientas.
+3. **Meta de ejecución:** latencia, tasa de error y tiempo de sincronización. Requiere una implementación y un ambiente de prueba.
+
+Fórmulas usadas:
+
+```text
+Fan-out de diseño = cantidad de colaboradores salientes visibles en el diagrama
+CBO de código = cantidad de tipos externos acoplados a la clase en la implementación
+Inestabilidad de módulo I = Ce / (Ca + Ce)
+```
+
+`Ce` son dependencias salientes hacia otros módulos y `Ca` dependencias entrantes desde otros módulos.
+
+#### 13.3.2 Línea base calculada desde los diagramas
+
+| Componente | Colaboradores directos identificados | Fan-out de diseño | Razones de cambio principales | Dependencias a SDK externos |
+|---|---|---:|---:|---:|
+| `VehicleLifecycleService` | repositorio, resolver State, especificaciones, autorización, reserva, efectos de publicación, auditoría y Outbox | 8 | 1: orquestación de transición | 0 |
+| `PublicationSyncCoordinator` | acciones, resolver, retry, idempotencia, publicaciones y Outbox | 6 | 1: coordinación de sincronización | 0 |
+| `AppointmentSchedulingService` | repositorio, leads, asignación, disponibilidad, política del vehículo, puerto de vehículo, auditoría y Outbox | 8 | 1: ciclo de cita | 0 |
+| `CRAutosAdapter` | cliente HTTP, credenciales y mapper | 3 | 1: contrato CRAutos | 1 |
+| `VehicleLifecycleController` | servicio y mapper de errores/respuestas | 2 | 1: contrato HTTP | 0 |
+| `ManualPublicationAdapter` | repositorio de tareas y mapper | 2 | 1: canal manual | 0 |
+
+La columna “razones de cambio” es una aproximación cualitativa de cohesión. El fan-out no se presenta como CBO medido. **LCOM4 y CBO deben calcularse sobre el código**, porque requieren tipos, métodos y atributos reales.
+
+#### 13.3.3 Dependencias entre módulos
+
+La línea base considera únicamente los ocho módulos internos declarados: `inventory`, `reservation`, `lead`, `appointment`, `publication`, `audit`, `outbox` e `integration`. Las interfaces web, el scheduler y los sistemas externos no se cuentan como módulos de dominio.
+
+| Módulo | Depende de | `Ce` | Es usado por | `Ca` | `I = Ce/(Ca+Ce)` |
+|---|---|---:|---|---:|---:|
+| `inventory` | `reservation`, `publication`, `audit`, `outbox` | 4 | `appointment` | 1 | 0.80 |
+| `reservation` | ninguno | 0 | `inventory` | 1 | 0.00 |
+| `lead` | `audit` | 1 | `appointment` | 1 | 0.50 |
+| `appointment` | `inventory`, `lead`, `audit`, `outbox` | 4 | ninguno | 0 | 1.00 |
+| `publication` | `audit`, `outbox` | 2 | `inventory`, `integration` | 2 | 0.50 |
+| `integration` | `publication`, `outbox` | 2 | ninguno | 0 | 1.00 |
+| `audit` | ninguno | 0 | `inventory`, `lead`, `appointment`, `publication` | 4 | 0.00 |
+| `outbox` | ninguno | 0 | `inventory`, `appointment`, `publication`, `integration` | 4 | 0.00 |
+
+`appointment` e `integration` son módulos de borde y por eso muestran inestabilidad alta. `audit`, `outbox` y `reservation` se mantienen estables. La tabla es una línea base de diseño; ArchUnit o JDepend debe confirmar las dependencias reales y detectar ciclos.
+
+#### 13.3.4 Metas sobre la implementación
+
+| Métrica o regla | Meta | Forma de comprobar | Acción si falla |
+|---|---|---|---|
+| LCOM4 por servicio de aplicación | `1` | SonarQube u otra herramienta sobre código | Separar métodos que no comparten datos ni colaboradores. |
+| CBO de servicios coordinadores | `<= 8` | Análisis estático | Extraer una coordinación secundaria o agrupar un puerto cohesivo. |
+| Dependencias de dominio a SDK externos | `0` | ArchUnit | Mover SDK y DTO externos al adaptador. |
+| Ciclos entre módulos | `0` | ArchUnit/JDepend | Introducir puerto o evento; eliminar dependencia de retorno. |
+| Controladores que acceden a repositorios | `0` | ArchUnit | Pasar por servicio de aplicación. |
+| Llamadas externas dentro de transacción HTTP | `0` | Prueba de integración y revisión | Generar Outbox. |
+| Clases State con `switch` sobre estado de origen | `0` | Revisión/ArchUnit personalizada | Mover comportamiento al State correspondiente. |
+
+
+### 13.4 Pruebas de arquitectura y calidad
+
+| Prueba | Resultado esperado |
+|---|---|
+| ArchUnit: controladores no acceden a repositorios | Cero violaciones. |
+| ArchUnit: dominio no depende de paquetes de proveedores | Cero violaciones. |
+| ArchUnit: módulos sin ciclos | Cero ciclos. |
+| Prueba por cada State | Solo ofrece transiciones definidas y especificaciones correctas. |
+| Dos reservas concurrentes | Una respuesta exitosa y una `409` o `412`. |
+| Dos citas traslapadas concurrentes | Una se guarda y la otra recibe `409 APPOINTMENT_TIME_CONFLICT`. |
+| Repetición con la misma clave idempotente | Mismo resultado; no hay duplicados. |
+| Evento con tres publicaciones | Tres acciones independientes; éxito parcial no se revierte y el agregado refleja la acción de mayor severidad. |
+| Fallo temporal | `EN_REINTENTO`, no `DEAD_LETTER`. |
+| Canal manual | Una tarea, acción `TAREA_MANUAL_ABIERTA` y evento `WAITING_MANUAL`. |
+| Cierre manual crítico sin evidencia | Rechazado; la tarea no pasa a `COMPLETADA`. |
+| Tarea manual vencida | Permanece visible y genera escalamiento. |
+| Evento en dead-letter | Alerta, responsable y detalle sanitizado disponibles. |
+| Replay del mismo evento | No duplica una acción ya aplicada y deja auditoría. |
+| Calendar fuera de servicio | Cita interna guardada y sincronización pendiente. |
+| Usuario sin permiso sobre documento | `403` y ningún enlace sensible. |
+| Permiso público inesperado en Drive | Documento en cuarentena, alerta y revocación cuando sea segura. |
+| Archivo de Drive ausente | `410`, metadato `MISSING` y tarea de revisión. |
+| Archivo con tipo falso o contenido rechazado | Permanece `PENDIENTE_REVISION` y no puede descargarse. |
+| Servicio de inspección caído | Falla cerrada, alerta y ningún documento pasa a `VERIFICADO`. |
+| Consulta de vehículo | Cero llamadas a proveedores. |
+| Auditoría | Cambios sensibles contienen `correlationId`. |
+
+
+### 13.5 Trazabilidad por requerimiento
+
+| Requerimiento | Contenedor | Componente | Patrón/técnica | Contrato | Prueba principal |
+|---|---|---|---|---|---|
+| `REQ-INV-01` | API + PostgreSQL | `VehicleLifecycleService`, `VehicleQueryService` | Repository, transacción local | 10.1.7 | Consulta y cambio de estado. |
+| `REQ-LCV-01` | API | Gestor de ciclo de vida | State + Specification | 10.1.7/5.1.8 | Prueba por cada State. |
+| `REQ-LCV-02` | API + PostgreSQL | `ReservationService` | Optimistic Lock + índice único | 10.1.7 | Dos reservas concurrentes. |
+| `REQ-LCV-03` | API | Gestor + agenda | State + Policy | 10.3.7 | Cita sobre vendido/retirado. |
+| `REQ-AUD-01` | API + PostgreSQL | `AuditPort` | Auditoría append-only | Contratos internos | Verificar actor, valores y motivo. |
+| `REQ-PUB-01` | API + procesador | Gestor + coordinador | Outbox + acciones por publicación | 10.2.7 | Cambio con varios canales. |
+| `REQ-PUB-02` | Procesador | Coordinador | Retry + estados operativos | 10.2.5, 10.2.9 y 10.2.10 | Proveedor caído. |
+| `REQ-PUB-03` | Procesador | `ManualPublicationAdapter` | Strategy + Adapter | 10.2.8/5.2.11 | Tarea única. |
+| `REQ-PUB-04` | Procesador + backoffice | Gestor de tareas manuales | SLA + evidencia + segregación | 10.2.11 | Cierre crítico sin evidencia y tarea vencida. |
+| `REQ-INT-01` | Procesador | Coordinador | Idempotencia por acción | 10.2.7 | Acción duplicada. |
+| `REQ-INT-02` | Procesador + PostgreSQL | Reader, dead-letter y operación | Métricas + alertas + replay | 10.2.10 | Worker detenido, dead-letter y recuperación. |
+| `REQ-LEAD-01` | Sitio público + API | `LeadService` | Servicio de aplicación | 10.3.7 | Alta con cuatro campos. |
+| `REQ-APT-01` | API + procesador | Agenda + Calendar adapter | Outbox | 10.3.7 | Calendar fuera de servicio. |
+| `REQ-APT-02` | API | `VehicleAppointmentPolicy` | Policy | 10.3.7 | Rechazo por estado terminal. |
+| `REQ-SEC-01` | API + PostgreSQL | `SecureDocumentService` | Authorization + Audit | 10.4.9 | Matriz de roles y finalidades. |
+| `REQ-SEC-02` | API + Google Drive | `DocumentAuthorizationPolicy`, adaptador | Acceso mediado + mínimo privilegio | 10.4.5–5.4.7 | Intento de enlace público y acceso directo. |
+| `REQ-SEC-03` | Procesador + Google Drive | `DrivePermissionReconciler` | Reconciliación | 10.4.8 | Archivo ausente y permission drift. |
+| `REQ-SEC-04` | API central | `DocumentContentInspectionPort` | Falla cerrada + cuarentena | 10.4.3, 10.4.5 y 10.4.7 | Archivo malicioso, tipo falso y escáner no disponible. |
+
+### 13.6 Cobertura de los componentes
+
+| Componente | Clases | Flujo principal | Flujo alternativo | Robustez | Contratos | Requerimientos trazados |
+|---|---|---|---|---|---|---|
+| Gestor del ciclo de vida | 10.1.3 | 10.1.4 | 10.1.5 | 10.1.6 | 10.1.7–5.1.8 | Sí |
+| Coordinador de publicaciones | 10.2.3 | 10.2.4 | 10.2.5 | 10.2.6 | 10.2.7–5.2.9 | Sí |
+| Servicio de agenda | 10.3.3 | 10.3.4 | 10.3.5 | 10.3.6 | 10.3.7–5.3.8 | Sí |
+| Gestor seguro de documentos (complementario) | 10.4.3 | 10.4.6 | 10.4.7 | 10.4.7–5.4.8 | 10.4.9 | Sí |
+---
+
+# BLOQUE 7 — SECCIONES ESPECÍFICAS POR TIPO DE SISTEMA
+*Hito: Entrega final (S14)*
+
+---
+
+## 14. Secciones específicas por tipo de sistema
+
+**Secciones incluidas:** 14.1 Sistemas distribuidos/cloud, porque existen contenedores y servicios externos; 14.2 Sistemas concurrentes, porque hay reservas, agenda y workers; y 14.5 Seguridad crítica, porque se manejan documentos y datos sensibles. No se incluyen IoT/edge ni IA generativa porque están fuera del alcance.
+
+### 14.1 Sistemas distribuidos / cloud
+
+#### Estrategia de consistencia
+
+El sistema usa **consistencia fuerte interna** para vehículo, reserva, cita, auditoría y Outbox dentro de PostgreSQL. Usa **consistencia eventual externa** para Drive, Calendar, WhatsApp, correo y marketplaces. Una falla de proveedor no revierte el estado interno; crea una acción en reintento, dead-letter o tarea manual.
+
+Cada acción tiene identidad e idempotency key. El estado agregado del evento no llega a `PROCESSED` mientras exista una acción no resuelta, una tarea manual abierta o una acción en dead-letter.
+
+#### Modelo CAP aplicado
+
+El núcleo transaccional favorece consistencia y operación controlada dentro de PostgreSQL. Cuando existe una partición con un servicio externo, el sistema mantiene disponibilidad para las operaciones internas y acepta que la vista externa quede temporalmente desactualizada. El diseño no aplica una única clasificación CAP a toda la solución: el límite interno y los proveedores externos tienen garantías diferentes.
+
+#### Manejo de fallos y resiliencia
+
+| Mecanismo | Dónde aplica | Regla |
+|---|---|---|
+| Timeout | Todos los adaptadores externos | Evita solicitudes indefinidas y clasifica el resultado como incierto o temporal. |
+| Reintento con espera creciente | Errores temporales | 1, 5, 15 y 60 minutos; después, dead-letter. |
+| Idempotencia | Transiciones, reservas, acciones y replay | Una misma intención no se ejecuta dos veces. |
+| Dead-letter por acción | Credenciales, solicitudes inválidas o intentos agotados | Conserva éxitos de otros destinos y exige recuperación autorizada. |
+| Tarea manual | Canal sin capacidad confiable | SLA, responsable, evidencia, verificación y escalamiento. |
+| Reconciliación | Resultado incierto, Drive y publicaciones | Compara el estado externo con la fuente interna antes de repetir. |
+| Falla cerrada | Inspección y autorización documental | Un archivo no verificado no queda disponible. |
+| Auditoría | Cambios y recuperaciones sensibles | Actor, motivo, fecha, correlationId y resultado. |
+
+### 14.2 Sistemas concurrentes / tiempo real
+
+#### Modelo de concurrencia
+
+Las solicitudes HTTP se procesan concurrentemente en la API. La base de datos protege las invariantes que no pueden depender solo de una verificación previa. El worker procesa acciones asíncronas con reclamo temporal; varias instancias pueden operar siempre que una acción tenga un único propietario durante su arrendamiento.
+
+#### Recursos compartidos y sincronización
+
+| Recurso compartido | Mecanismo de sincronización | Riesgo de condición de carrera | Mitigación |
+|---|---|---|---|
+| Vehículo | Versión optimista | Dos cambios basados en el mismo estado. | `If-Match`, actualización condicionada y `412`. |
+| Reserva activa | Índice único parcial | Dos compradores reservan el mismo vehículo. | Restricción de PostgreSQL y respuesta `409`. |
+| Agenda de vendedor | Exclusión de intervalos o restricción equivalente | Citas traslapadas. | Validación y restricción transaccional. |
+| Evento/acción Outbox | Lock con vencimiento | Dos workers ejecutan la misma acción. | `locked_by`, `locked_until` e idempotencia. |
+| Tarea manual | Unicidad por acción/canal | Dos responsables ejecutan lo mismo. | Asignación y una tarea activa por intención. |
+| Replay | Control de acceso e idempotencia | Repetir una acción aplicada. | Reconciliación externa y replay por acción. |
+
+No se diseñan locks de aplicación de larga duración. La base de datos conserva las invariantes y los locks del worker expiran para evitar bloqueo permanente por caída de proceso.
+
+### 14.5 Sistemas con seguridad crítica
+
+El sistema no es de seguridad física crítica, pero maneja información sensible y operaciones comerciales que requieren seguridad por diseño.
+
+#### Modelo de amenazas — STRIDE simplificado
+
+| Amenaza | Componente en riesgo | Mitigación en el diseño |
+|---|---|---|
+| Spoofing | Backoffice, API y operaciones de recuperación | Autenticación, tokens con vencimiento, roles y validación del actor. |
+| Tampering | Estado, precio, reserva, auditoría y Outbox | Transacciones, control optimista, restricciones de base y auditoría append-only. |
+| Repudiation | Cambios sensibles, descarga y replay | Actor, motivo, correlationId, valores anterior/nuevo y resultado de transferencia. |
+| Information Disclosure | Documentos de Drive y datos de clientes | Clasificación, mínimo privilegio, acceso mediado, no enlaces públicos, sanitización de errores. |
+| Denial of Service | API, worker y proveedores | Timeouts, límites, procesamiento asíncrono, backlog observable y aislamiento del worker. |
+| Elevation of Privilege | Administración técnica y documentos | Autorización por rol/recurso/finalidad, excepción temporal aprobada y doble control para bajar clasificación. |
+
+#### Controles por capa
+
+| Capa | Controles |
+|---|---|
+| Navegador y borde | HTTPS, encabezados de seguridad, validación de origen y límites de solicitud. |
+| API | Autenticación, autorización, validación de entrada, idempotencia, `If-Match`, auditoría y respuestas sin datos sensibles. |
+| Dominio | Políticas de transición, precondiciones, estados terminales e invariantes. |
+| Persistencia | Restricciones, versiones, acceso de mínimo privilegio, respaldos y cifrado del canal. |
+| Integraciones | OAuth 2.0, secretos fuera del código, timeouts, error sanitizado, reconciliación e idempotencia. |
+| Documentos | Inspección, clasificación, acceso mediado, permisos no públicos, retención y revisión de drift. |
+| Operación | Métricas, alertas, segregación de funciones, runbook y replay auditado. |
+---
+
+# BLOQUE 8 — TENDENCIAS Y EVOLUCIÓN
+*Hito: Entrega final (S14)*
+
+---
+
+## 15. Tendencias y evolución del diseño
+
+### 15.1 Postura frente a tendencias relevantes
+
+| Tendencia | Postura del diseño | Justificación |
+|---|---|---|
+| Microservicios | Rechazada para la primera etapa; punto de evolución | El dominio necesita transacciones coordinadas y el tamaño inicial no justifica sagas y operación distribuida. |
+| Cloud-native / 12-factor | Parcialmente adoptada | Contenedores separados, configuración externa, logs/metricas y procesos stateless; el proveedor y la plataforma aún no están seleccionados. |
+| Diseño dirigido por el dominio | Parcialmente adoptada | Se usan lenguaje ubicuo, estados, agregados y servicios de dominio, sin introducir toda la disciplina táctica de DDD. |
+| Arquitectura hexagonal | Adoptada en límites externos | Puertos y adaptadores separan Drive, Calendar, publicaciones, notificaciones y persistencia. |
+| Event-driven | Adoptada para efectos externos | Outbox y acciones asíncronas desacoplan la transacción interna. |
+| CQRS | Uso limitado | Las consultas pueden usar proyecciones de lectura, pero no se separan bases ni modelos completos. |
+| Zero Trust / mínimo privilegio | Parcialmente adoptada | Todo acceso documental se autoriza por solicitud; falta validar infraestructura e identidad final. |
+| IA generativa / agentes | Rechazada | No resuelve un driver del alcance y agregaría riesgos de privacidad y calidad. |
+
+### 15.2 Puntos de extensión del diseño
+
+| Punto de extensión | Cambio que habilita | Decisión que lo soporta |
+|---|---|---|
+| `PublicationChannelPort` | Agregar un marketplace o cambiar su cliente técnico. | ADR-004 y Strategy + Adapter. |
+| `DocumentStoragePort` | Sustituir Drive por otro almacenamiento. | ADR-006 y DIP. |
+| `VehicleStateBehavior` | Agregar o ajustar un estado sin distribuir condicionales. | ADR-003 y State. |
+| Specifications de precondición | Incorporar reglas por tipo de vehículo o política comercial. | Specification y SRP. |
+| Outbox con acciones por destino | Mover el procesamiento a un broker si el volumen crece. | ADR-005 y ADR-008. |
+| Proyecciones de lectura | Optimizar consultas sin modificar el modelo transaccional. | Separación de consulta y comandos. |
+| Política de agenda | Incorporar sedes, duración variable o recursos adicionales. | Policy/Specification y restricciones de calendario. |
+| Clasificación documental | Agregar tipos, retención o aprobaciones. | ADR-010 y metadatos internos. |
+
+### 15.3 Riesgos abiertos y decisiones futuras
+
+| Riesgo | Impacto | Tratamiento propuesto |
+|---|---|---|
+| Un marketplace no ofrece API estable | Actualización manual y posible desfase. | Mantener `ManualPublicationAdapter`, SLA interno y tablero de tareas. |
+| Crece el número de reglas de transición | `VehicleLifecycleService` puede aumentar su CBO. | Mantener políticas y especificaciones separadas; revisar límite CBO `<= 8`. |
+| El volumen de Outbox aumenta | Retrasos en sincronización. | Procesamiento por lotes, índices por estado/fecha, múltiples workers con bloqueo seguro y alerta por edad máxima. |
+| Eventos llegan a dead-letter y nadie los atiende | Publicaciones externas permanecen incorrectas. | Responsable explícito, alertas, tablero y runbook de recuperación auditada. |
+| Una tarea manual se cierra sin ejecutar la acción | El tablero muestra una falsa consistencia. | Evidencia obligatoria, verificación independiente y reconciliación. |
+| Permisos de Drive no coinciden con la aplicación | Exposición o enlaces rotos. | Acceso mediado, reconciliación diaria, cuarentena, revocación y alerta. |
+| Un administrador técnico obtiene acceso excesivo a documentos | Riesgo de privacidad. | Separar administración técnica de autorización de contenido; acceso excepcional con motivo y auditoría. |
+| Duplicación en proyecciones de lectura | Datos visibles temporalmente atrasados. | Actualización transaccional cuando sea posible y reconciliación programada. |
+| Dos vendedores intentan agendar el mismo intervalo | Doble asignación del responsable. | Consulta de disponibilidad más restricción de exclusión en PostgreSQL y respuesta `409`. |
+| El monolito crece sin límites | Acoplamiento entre módulos. | ArchUnit, paquetes por dominio, puertos explícitos y prohibición de ciclos. |
+
+---
+---
+
+# APÉNDICES
+
+---
+
+## 16. Glosario
+
+| Término | Definición |
+|---|---|
+| Consignación | Acuerdo por el cual el negocio comercializa un vehículo de un tercero sin confundir al consignante con el comprador. |
+| Consignante | Persona que entrega el vehículo para su venta. |
+| Cliente comprador | Persona interesada en consultar, visitar, reservar o comprar un vehículo. |
+| Cliente potencial / lead | Registro de una persona interesada, su canal de origen y siguiente acción. |
+| Fuente de verdad | Registro interno que determina el valor oficial de precio, estado y disponibilidad. |
+| Ciclo de vida | Conjunto de estados permitidos y reglas para pasar entre ellos. |
+| Reserva activa | Apartado vigente que impide otra reserva del mismo vehículo. |
+| Publicación externa | Representación del vehículo en un canal fuera del sistema. |
+| Canal manual | Marketplace o capacidad que requiere una tarea humana en vez de una API confiable. |
+| Outbox transaccional | Tabla donde se persiste, en la misma transacción del cambio de negocio, la intención de ejecutar un efecto externo. |
+| Acción de integración | Trabajo dirigido a un destino concreto, derivado de un evento Outbox. |
+| Dead-letter | Estado de una acción que no puede continuar automáticamente y requiere intervención. |
+| Replay | Recuperación controlada que vuelve a ejecutar una acción fallida sin repetir las exitosas. |
+| Idempotencia | Propiedad que permite repetir una misma solicitud sin duplicar su efecto. |
+| Control optimista | Verificación de versión que detecta cambios concurrentes antes de confirmar una escritura. |
+| Reconciliación | Comparación entre la fuente interna y el estado externo para detectar o corregir diferencias. |
+| Evidencia | Referencia verificable usada para cerrar una tarea manual o demostrar un acceso/resultado. |
+| Acceso mediado | Descarga o carga que pasa por la API para aplicar autorización y auditoría antes de acceder a Drive. |
+| Permission drift | Diferencia no autorizada entre los permisos esperados por la aplicación y los configurados en Drive. |
+| CorrelationId | Identificador que enlaza solicitud, auditoría, evento, acción y error. |
+| Contenedor C4 | Unidad ejecutable o de almacenamiento con una frontera propia; no significa necesariamente un contenedor Docker. |
+| Componente C4 | Unidad interna de responsabilidad dentro de un contenedor. |
+| State | Patrón que encapsula comportamiento dependiente del estado. |
+| Strategy | Patrón que intercambia una política o algoritmo detrás de una interfaz común. |
+| Adapter | Patrón que traduce el contrato interno al contrato de un proveedor. |
+| Specification | Objeto que representa una regla o precondición combinable. |
+
+---
+
+## 17. Referencias
+
+- Brown, S. (2014). *Software Architecture for Developers*. Leanpub.
+- Budgen, D. (2003). *Software Design* (2.ª ed.). Addison-Wesley.
+- Fowler, M. (2002). *Patterns of Enterprise Application Architecture*. Addison-Wesley.
+- Gamma, E., Helm, R., Johnson, R., & Vlissides, J. (1995). *Design Patterns: Elements of Reusable Object-Oriented Software*. Addison-Wesley.
+- Gomaa, H. (2011). *Software Modeling and Design: UML, Use Cases, Patterns, and Software Architectures*. Cambridge University Press.
+- Hohpe, G., & Woolf, B. (2003). *Enterprise Integration Patterns*. Addison-Wesley.
+- Nygard, M. T. (2018). *Release It!* (2.ª ed.). Pragmatic Bookshelf.
+- Richards, M., & Ford, N. (2020). *Fundamentals of Software Architecture*. O'Reilly Media.
+- Documentación oficial de Java 21, Spring Boot, Spring Security, PostgreSQL, Google Drive API, Google Calendar API y OAuth 2.0, consultable durante la implementación.
+- Avance 1 (S07), Avance 2 (S11), Avance 3 y ADRs del repositorio del proyecto.
