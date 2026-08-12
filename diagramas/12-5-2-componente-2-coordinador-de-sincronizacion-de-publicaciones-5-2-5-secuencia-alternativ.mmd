@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant C as PublicationSyncCoordinator
+    participant A as Encuentra24Adapter
+    participant X as Proveedor externo
+    participant RP as RetryPolicy
+    participant AR as IntegrationActionRepository
+    participant O as OutboxRepository
+
+    C->>A: execute(UpdateAvailability)
+    A->>X: HTTPS request
+    X--xA: timeout / 503
+    A-->>C: RetryableFailure
+    C->>RP: decision(attempts=2, TEMPORARY)
+    RP-->>C: retryAt + continuar
+    C->>AR: save(EN_REINTENTO, error, retryAt)
+    C->>O: markRetryScheduled(eventId)

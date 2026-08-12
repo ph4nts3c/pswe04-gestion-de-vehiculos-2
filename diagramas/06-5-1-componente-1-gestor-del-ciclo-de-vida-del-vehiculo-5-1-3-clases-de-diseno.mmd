@@ -1,0 +1,93 @@
+classDiagram
+    class VehicleLifecycleController {
+      +getAvailableTransitions(vehicleId, actor)
+      +transition(vehicleId, command, ifMatch, idempotencyKey)
+    }
+
+    class VehicleLifecycleService {
+      +availableTransitions(vehicleId, actor) TransitionView
+      +transition(command) TransitionResult
+    }
+
+    class Vehicle {
+      -UUID id
+      -VehicleState state
+      -Money askingPrice
+      -long version
+      +apply(decision)
+      +isTerminal() boolean
+    }
+
+    class VehicleStateResolver {
+      +resolve(state) VehicleStateBehavior
+    }
+
+    class VehicleStateBehavior {
+      <<interface>>
+      +evaluate(target, context) TransitionDecision
+      +availableTransitions(context) Set~TransitionOption~
+    }
+
+    class PublishedState
+    class ReservedState
+    class SoldState
+    class RetiredState
+
+    class TransitionSpecification {
+      <<interface>>
+      +evaluate(context) SpecificationResult
+    }
+
+    class ReservationService {
+      +createActive(vehicleId, buyerId, condition)
+      +cancelActive(vehicleId, reason)
+      +convertToSale(vehicleId)
+    }
+
+    class AuthorizationService {
+      +assertAllowed(actor, permission)
+    }
+
+    class VehicleRepository {
+      <<interface>>
+      +findById(id)
+      +saveIfVersion(vehicle, expectedVersion)
+    }
+
+    class ReservationRepository {
+      <<interface>>
+      +existsActiveByVehicle(vehicleId) boolean
+      +save(reservation)
+    }
+
+    class PublicationEffectPort {
+      <<interface>>
+      +markForStateChange(vehicleId, previous, current)
+    }
+
+    class AuditPort {
+      <<interface>>
+      +append(event)
+    }
+
+    class OutboxPort {
+      <<interface>>
+      +append(event)
+    }
+
+    VehicleLifecycleController --> VehicleLifecycleService
+    VehicleLifecycleService --> VehicleRepository
+    VehicleLifecycleService --> VehicleStateResolver
+    VehicleStateResolver --> VehicleStateBehavior
+    VehicleStateBehavior <|.. PublishedState
+    VehicleStateBehavior <|.. ReservedState
+    VehicleStateBehavior <|.. SoldState
+    VehicleStateBehavior <|.. RetiredState
+    VehicleLifecycleService --> TransitionSpecification
+    VehicleLifecycleService --> AuthorizationService
+    VehicleLifecycleService --> ReservationService
+    VehicleLifecycleService --> PublicationEffectPort
+    VehicleLifecycleService --> AuditPort
+    VehicleLifecycleService --> OutboxPort
+    ReservationService --> ReservationRepository
+    VehicleRepository --> Vehicle

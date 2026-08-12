@@ -1,0 +1,16 @@
+flowchart TB
+    browser["Dispositivo cliente\nNavegador web"]
+    edge["Nodo de borde\nProxy inverso + TLS"]
+    web["Nodo web\nBackoffice React\nSitio público Next.js"]
+    app["Nodo de aplicación\nAPI Spring Boot\nWorker Spring Boot\nContenedores separados"]
+    data[("Nodo de datos\nPostgreSQL\nRespaldos y cifrado")]
+    obs["Nodo de observabilidad\nMétricas, logs y alertas\nTecnología por seleccionar"]
+    ext["Servicios externos\nDrive, Calendar, WhatsApp,\nmarketplaces y correo"]
+
+    browser -->|"HTTPS/443"| edge
+    edge -->|"HTTPS interno"| web
+    web -->|"REST/JSON HTTPS"| app
+    app -->|"JDBC/TLS 5432"| data
+    app -->|"HTTPS/OAuth 2.0 o SMTP"| ext
+    app -->|"métricas y logs"| obs
+    data -->|"métricas y respaldos"| obs

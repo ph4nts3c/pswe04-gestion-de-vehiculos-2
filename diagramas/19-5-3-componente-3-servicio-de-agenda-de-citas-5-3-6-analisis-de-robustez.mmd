@@ -1,0 +1,25 @@
+flowchart LR
+    web["«boundary»\nSitio público / Backoffice"]
+    controller["«boundary»\nAppointmentController"]
+    service["«control»\nAppointmentSchedulingService"]
+    assignment["«control»\nSellerAssignmentPolicy"]
+    availability["«control»\nSellerAvailabilityPolicy"]
+    vehiclePolicy["«control»\nVehicleAppointmentPolicy"]
+    leadControl["«control»\nLeadService"]
+    appointment["«entity»\nAppointment"]
+    lead["«entity»\nLead"]
+    vehicle["«entity»\nVehicle (consulta)"]
+    audit["«entity»\nAuditEvent"]
+    outbox["«entity»\nOutboxEvent"]
+
+    web --> controller
+    controller --> service
+    service --> assignment
+    service --> availability
+    service --> vehiclePolicy
+    service --> leadControl
+    service --> appointment
+    leadControl --> lead
+    vehiclePolicy --> vehicle
+    service --> audit
+    service --> outbox

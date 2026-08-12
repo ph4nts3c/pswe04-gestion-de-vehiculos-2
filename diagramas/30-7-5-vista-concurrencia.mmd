@@ -1,0 +1,21 @@
+flowchart LR
+    req1["Solicitud A\nreservar vehículo"]
+    req2["Solicitud B\nreservar vehículo"]
+    api1["Transacción A"]
+    api2["Transacción B"]
+    version["Vehicle.version\ncontrol optimista"]
+    unique["Índice único parcial\nreserva ACTIVA por vehículo"]
+    outbox["Outbox\nreclamo con locked_by/locked_until"]
+    result1["Una reserva confirmada"]
+    result2["Otra solicitud rechazada"]
+    workers["Workers concurrentes"]
+
+    req1 --> api1
+    req2 --> api2
+    api1 --> version
+    api2 --> version
+    version --> unique
+    unique --> result1
+    unique --> result2
+    workers --> outbox
+    outbox -->|"una acción por worker"| workers

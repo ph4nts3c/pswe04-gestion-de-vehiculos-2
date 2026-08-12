@@ -1,0 +1,21 @@
+flowchart LR
+    scheduler["«boundary»\nScheduler / OutboxEventReader"]
+    coordinator["«control»\nPublicationSyncCoordinator"]
+    resolver["«control»\nPublicationChannelResolver"]
+    retry["«control»\nRetryPolicy"]
+    adapter["«boundary»\nPublicationChannel adapter"]
+    publication["«entity»\nExternalPublication"]
+    action["«entity»\nPublicationSyncAction"]
+    outbox["«entity»\nOutboxEvent"]
+    task["«entity»\nManualTask"]
+    provider["Sistema externo"]
+
+    scheduler --> coordinator
+    coordinator --> resolver
+    coordinator --> retry
+    resolver --> adapter
+    adapter --> provider
+    coordinator --> publication
+    coordinator --> action
+    coordinator --> outbox
+    coordinator --> task

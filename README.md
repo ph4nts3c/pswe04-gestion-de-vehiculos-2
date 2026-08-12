@@ -33,4 +33,5 @@
 | 0.1 | 2026-05-26 | Propuesta (S03) | Creación del documento inicial | Alejandro, William, Rodolfo |
 | 0.2 | 2026-06-20 | Avance 1  (S07) | Contexto del sistema, stakeholders, drivers arquitectónicos, escenarios de calidad y vista de contexto C4. | Alejandro, William, Rodolfo |
 | 0.2.1 | 2026-06-22 | Avance 1  (S07) | Ajustes de roles y vista C4 según retroalimentación. | Rodolfo |
-| 0.3.1 | 2026-07-23 | Avance 2  (S07) | Revisión de diseño y vista C4 según retroalimentación. | William |
+| 0.3.1 | 2026-07-23 | Avance 2  (S11) | Revisión de diseño y vista C4 según retroalimentación. | William |
+| 0.4.0 | 2026-08-06 | Entrega Final  (S14) | Elaboración de Documento Entrega Final. | Alejandro, William, Rodolfo |

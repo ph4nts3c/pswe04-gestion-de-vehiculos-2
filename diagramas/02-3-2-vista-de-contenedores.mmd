@@ -1,0 +1,31 @@
+flowchart TB
+    internal["Usuarios internos"]
+    buyer["Cliente comprador"]
+
+    subgraph solution["Gestión de venta de vehículos"]
+        backoffice["Backoffice web\nReact + TypeScript\nOperación privada"]
+        publicsite["Sitio web público\nNext.js + TypeScript\nConsulta y captación"]
+        api["API central\nJava 21 + Spring Boot\nReglas, seguridad y acceso documental"]
+        worker["Procesador de integraciones\nJava 21 + Spring Boot\nOutbox, adaptadores y reconciliación"]
+        db[("PostgreSQL\nFuente de verdad")]
+    end
+
+    drive["Google Drive"]
+    calendar["Google Calendar"]
+    whatsapp["WhatsApp Business"]
+    marketplaces["CRAutos / Facebook / Encuentra24"]
+    notify["Correo / notificaciones"]
+
+    internal -->|"HTTPS"| backoffice
+    buyer -->|"HTTPS"| publicsite
+    backoffice -->|"REST/JSON + JWT"| api
+    publicsite -->|"REST/JSON"| api
+    api -->|"JDBC + SQL/TLS"| db
+    worker -->|"JDBC + SQL/TLS"| db
+
+    api -->|"HTTPS REST + OAuth 2.0\nCarga y lectura autorizada"| drive
+    worker -->|"HTTPS REST + OAuth 2.0\nReconciliación y permisos"| drive
+    worker -->|"HTTPS REST + OAuth 2.0"| calendar
+    worker -->|"HTTPS API / webhook"| whatsapp
+    worker -->|"HTTPS/API o tarea manual"| marketplaces
+    worker -->|"HTTPS API o SMTP"| notify

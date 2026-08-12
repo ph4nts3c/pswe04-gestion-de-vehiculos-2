@@ -1,0 +1,32 @@
+flowchart LR
+    owner["«Person»\nDueño del negocio"]
+    seller["«Person»\nVendedor"]
+    pubmanager["«Person»\nEncargado de publicaciones"]
+    docmanager["«Person»\nEncargado de fotos y documentos"]
+    finance["«Person»\nResponsable financiero"]
+    admin["«Person»\nAdministrador técnico"]
+    consignor["«Person»\nCliente vendedor / consignante"]
+    buyer["«Person»\nCliente comprador"]
+
+    system["«Software System»\nGestión de venta de vehículos\nFuente de verdad de la operación"]
+
+    whatsapp["«External Software System»\nWhatsApp Business"]
+    marketplaces["«External Software Systems»\nCRAutos / Facebook Marketplace / Encuentra24"]
+    drive["«External Software System»\nGoogle Drive"]
+    calendar["«External Software System»\nGoogle Calendar"]
+    notify["«External Software System»\nCorreo / notificaciones"]
+
+    owner -->|"consulta operación y aprueba cambios"| system
+    seller -->|"gestiona vehículos, leads, citas y reservas"| system
+    pubmanager -->|"mantiene publicaciones y tareas"| system
+    docmanager -->|"registra fotos, documentos y revisión"| system
+    finance -->|"registra venta y comisión"| system
+    admin -->|"administra usuarios e integraciones"| system
+    consignor -->|"entrega vehículo y recibe seguimiento"| system
+    buyer -->|"consulta inventario y solicita contacto o visita"| system
+
+    system -->|"registra o sincroniza contactos"| whatsapp
+    system -->|"actualiza publicaciones o crea tareas"| marketplaces
+    system -->|"gestiona archivos mediante referencias"| drive
+    system -->|"sincroniza copias de citas"| calendar
+    system -->|"envía alertas y recordatorios"| notify
